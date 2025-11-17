@@ -84,13 +84,32 @@ def main():
         input("\nPress Enter to continue...")
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--help":
+            print("PowerPoint Automation Tool")
+            print("\nUsage:")
+            print("  python main.py              - Interactive menu")
+            print("  python main.py --help       - Show this help message")
+            print("  python main.py --status     - Show configuration and status")
+            print("\nDirect script execution:")
+            print("  python insert_images.py     - Insert images only")
+            print("  python numinsert3.py        - Insert statistics only")
+            print("  python numinsert3.py <customer> - Insert statistics for specific customer")
+            sys.exit(0)
+        elif sys.argv[1] == "--status":
+            print("PowerPoint Automation Tool - Status Check")
+            print("=" * 50)
+            show_config()
+            print("\nDirectory Status:")
+            create_directories()
+            sys.exit(0)
+    
     print("Welcome to PowerPoint Automation Tool")
     print("This tool helps automate PowerPoint report generation with images and Grafana statistics.")
     
     if not os.path.exists(config.BASE_TEMPLATE_DIR):
         print(f"\nWarning: Template directory not found at {config.BASE_TEMPLATE_DIR}")
-        create = input("Would you like to create the directory structure now? (y/n): ").strip().lower()
-        if create == 'y':
-            create_directories()
+        print("Creating directory structure...")
+        create_directories()
     
     main()

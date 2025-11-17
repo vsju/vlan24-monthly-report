@@ -59,7 +59,7 @@ def get_dashboard_definition(dashboard_uid, retries=3, delay=1):
     headers = {"Authorization": f"Bearer {config.API_KEY}"}
     for i in range(retries):
         try:
-            response = requests.get(url, headers=headers, timeout=20, verify=False)
+            response = requests.get(url, headers=headers, timeout=20, verify=config.VERIFY_SSL)
             response.raise_for_status()
             dashboard = response.json().get('dashboard', {})
             dashboard['all_panels'] = find_all_panels_recursively(dashboard.get('panels', []))
@@ -112,7 +112,7 @@ def get_grafana_stats_by_panel(panel, query_letter, start_ts, end_ts):
     try:
         response = requests.post(query_url, headers=headers,
                                  data=json.dumps(query_payload),
-                                 timeout=120, verify=False)
+                                 timeout=120, verify=config.VERIFY_SSL)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
@@ -168,7 +168,8 @@ if __name__ == "__main__":
     from pptx.dml.color import RGBColor
     import time
     import gc
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    if not config.VERIFY_SSL:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     target_customer_path = None
     if len(sys.argv) > 1:

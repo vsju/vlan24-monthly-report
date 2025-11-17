@@ -9,6 +9,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "Report", "completed_final")
 
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
 API_KEY = os.getenv("GRAFANA_API_KEY", "")
+VERIFY_SSL = os.getenv("GRAFANA_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
 DASHBOARD_MAP = {
     "kpmo": "dejkgjz0jnoqoa",

@@ -33,6 +33,9 @@ The tool requires the following directories (created automatically on first run)
 If you want to use the Grafana statistics feature, set these environment variables:
 - `GRAFANA_URL` - Your Grafana server URL (default: http://localhost:3000)
 - `GRAFANA_API_KEY` - Your Grafana API key
+- `GRAFANA_VERIFY_SSL` - Whether to verify SSL certificates (default: true)
+  - Set to "false" only if using self-signed certificates or testing environments
+  - For production, always keep this as "true" for security
 
 To set environment variables in Replit:
 1. Click on "Tools" in the left sidebar
@@ -146,13 +149,16 @@ Key settings:
 
 ### Environment Variables
 Set these in Replit Secrets if needed:
-- `GRAFANA_URL`
-- `GRAFANA_API_KEY`
+- `GRAFANA_URL` - Grafana server URL
+- `GRAFANA_API_KEY` - Grafana API token
+- `GRAFANA_VERIFY_SSL` - SSL verification (default: true, set to "false" only for testing)
 
 ## Recent Changes
 - 2025-11-17: Initial setup for Replit environment
   - Converted hardcoded /root paths to configurable paths
-  - Created CLI interface (main.py)
+  - Created CLI interface (main.py) with interactive menu and non-interactive flags
   - Added config.py for centralized configuration
   - Set up proper directory structure
   - Added comprehensive documentation
+  - Made SSL verification configurable (defaults to secure)
+  - Created workflow that completes successfully with --status flag
