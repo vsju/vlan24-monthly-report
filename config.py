@@ -7,9 +7,19 @@ BASE_IMAGE_DIR = os.path.join(BASE_DIR, "Report")
 OUTPUT_DIR_WITH_IMAGES = os.path.join(BASE_DIR, "Report", "completed_with_images")
 OUTPUT_DIR = os.path.join(BASE_DIR, "Report", "completed_final")
 
-GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
-API_KEY = os.getenv("GRAFANA_API_KEY", "")
-VERIFY_SSL = os.getenv("GRAFANA_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+def get_secret(key, default=""):
+    """Streamlit secrets 또는 환경 변수에서 값 가져오기"""
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and key in st.secrets:
+            return st.secrets[key]
+    except:
+        pass
+    return os.getenv(key, default)
+
+GRAFANA_URL = get_secret("GRAFANA_URL", "http://localhost:3000")
+API_KEY = get_secret("GRAFANA_API_KEY", "")
+VERIFY_SSL = get_secret("GRAFANA_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
 DASHBOARD_MAP = {
     "kpmo": "dejkgjz0jnoqoa",

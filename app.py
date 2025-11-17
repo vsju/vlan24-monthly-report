@@ -248,20 +248,83 @@ with tab4:
     
     st.divider()
     
-    st.subheader("Grafana 설정")
-    st.text(f"Grafana URL: {config.GRAFANA_URL}")
-    st.text(f"API 키: {'*' * 20 if config.API_KEY else '미설정'}")
-    st.text(f"SSL 검증: {'활성화' if config.VERIFY_SSL else '비활성화'}")
+    st.subheader("🔐 Grafana API 설정")
     
-    st.info("""
-    **환경 변수 설정 방법:**
-    1. 왼쪽 사이드바에서 "Tools" 클릭
-    2. "Secrets" 선택
-    3. 다음 키를 추가:
-       - `GRAFANA_URL`: Grafana 서버 URL
-       - `GRAFANA_API_KEY`: API 키
-       - `GRAFANA_VERIFY_SSL`: SSL 검증 (true/false)
-    """)
+    with st.expander("Grafana API 설정 편집", expanded=False):
+        st.info("Grafana API 연결 정보를 설정합니다. 설정 후 페이지를 새로고침해야 적용됩니다.")
+        
+        try:
+            secrets_file = ".streamlit/secrets.toml"
+            current_secrets = {}
+            if os.path.exists(secrets_file):
+                import toml
+                with open(secrets_file, "r") as f:
+                    current_secrets = toml.load(f)
+        except:
+            current_secrets = {}
+        
+        grafana_url = st.text_input(
+            "Grafana URL",
+            value=current_secrets.get("GRAFANA_URL", "http://localhost:3000"),
+            help="Grafana 서버 주소 (예: http://localhost:3000 또는 https://your-grafana.com)",
+            key="grafana_url_input"
+        )
+        
+        grafana_api_key = st.text_input(
+            "Grafana API Key",
+            value=current_secrets.get("GRAFANA_API_KEY", ""),
+            type="password",
+            help="Grafana에서 생성한 API 키",
+            key="grafana_api_input"
+        )
+        
+        verify_ssl = st.selectbox(
+            "SSL 인증서 검증",
+            options=["true", "false"],
+            index=0 if current_secrets.get("GRAFANA_VERIFY_SSL", "true") == "true" else 1,
+            help="HTTPS 사용 시 SSL 인증서 검증 여부 (프로덕션에서는 true 권장)",
+            key="verify_ssl_select"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 API 설정 저장", type="primary", key="save_grafana"):
+                try:
+                    os.makedirs(".streamlit", exist_ok=True)
+                    
+                    secrets_content = f"""# Grafana API 설정
+GRAFANA_URL = "{grafana_url}"
+GRAFANA_API_KEY = "{grafana_api_key}"
+GRAFANA_VERIFY_SSL = "{verify_ssl}"
+"""
+                    
+                    with open(secrets_file, "w", encoding="utf-8") as f:
+                        f.write(secrets_content)
+                    
+                    st.success("✅ Grafana API 설정이 저장되었습니다!")
+                    st.info("⚠️ 변경사항을 적용하려면 페이지를 새로고침하세요 (Ctrl+R 또는 F5)")
+                except Exception as e:
+                    st.error(f"오류 발생: {e}")
+        
+        with col2:
+            if st.button("🗑️ API 설정 삭제", key="clear_grafana"):
+                try:
+                    if os.path.exists(secrets_file):
+                        os.remove(secrets_file)
+                        st.success("✅ Grafana API 설정이 삭제되었습니다!")
+                        st.info("⚠️ 변경사항을 적용하려면 페이지를 새로고침하세요")
+                except Exception as e:
+                    st.error(f"오류 발생: {e}")
+    
+    st.divider()
+    
+    st.subheader("현재 Grafana 설정")
+    st.text(f"Grafana URL: {config.GRAFANA_URL}")
+    st.text(f"API 키: {'*' * 20 if config.API_KEY else '❌ 미설정'}")
+    st.text(f"SSL 검증: {'✅ 활성화' if config.VERIFY_SSL else '⚠️ 비활성화'}")
+    
+    if not config.API_KEY:
+        st.warning("⚠️ Grafana API 키가 설정되지 않았습니다. 위의 'Grafana API 설정 편집'에서 설정하세요.")
     
     st.divider()
     
