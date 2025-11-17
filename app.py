@@ -372,6 +372,34 @@ with tab2:
                     st.subheader("실행 결과")
                     if result.returncode == 0:
                         st.success("✅ 이미지 삽입이 완료되었습니다!")
+                        
+                        completed_files = []
+                        if os.path.exists(config.OUTPUT_DIR_WITH_IMAGES):
+                            for f in os.listdir(config.OUTPUT_DIR_WITH_IMAGES):
+                                if f.endswith('.pptx') and not f.startswith('~$'):
+                                    completed_files.append(f)
+                        
+                        if completed_files:
+                            st.subheader("📥 완료된 파일 다운로드")
+                            st.info(f"총 {len(completed_files)}개의 파일이 생성되었습니다.")
+                            
+                            for file_name in completed_files:
+                                file_path = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, file_name)
+                                file_size = os.path.getsize(file_path) / 1024
+                                
+                                col_file, col_download = st.columns([3, 1])
+                                with col_file:
+                                    st.text(f"📄 {file_name} ({file_size:.1f} KB)")
+                                
+                                with col_download:
+                                    with open(file_path, "rb") as f:
+                                        st.download_button(
+                                            label="다운로드",
+                                            data=f,
+                                            file_name=file_name,
+                                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                            key=f"download_img_{file_name}"
+                                        )
                     else:
                         st.error("❌ 오류가 발생했습니다.")
                     
@@ -419,6 +447,34 @@ with tab3:
             st.subheader("실행 결과")
             if result.returncode == 0:
                 st.success("✅ 통계 삽입이 완료되었습니다!")
+                
+                completed_files = []
+                if os.path.exists(config.OUTPUT_DIR):
+                    for f in os.listdir(config.OUTPUT_DIR):
+                        if f.endswith('.pptx') and not f.startswith('~$'):
+                            completed_files.append(f)
+                
+                if completed_files:
+                    st.subheader("📥 최종 완료된 파일 다운로드")
+                    st.info(f"총 {len(completed_files)}개의 최종 보고서가 생성되었습니다.")
+                    
+                    for file_name in completed_files:
+                        file_path = os.path.join(config.OUTPUT_DIR, file_name)
+                        file_size = os.path.getsize(file_path) / 1024
+                        
+                        col_file, col_download = st.columns([3, 1])
+                        with col_file:
+                            st.text(f"📄 {file_name} ({file_size:.1f} KB)")
+                        
+                        with col_download:
+                            with open(file_path, "rb") as f:
+                                st.download_button(
+                                    label="다운로드",
+                                    data=f,
+                                    file_name=file_name,
+                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                    key=f"download_final_{file_name}"
+                                )
             else:
                 st.error("❌ 오류가 발생했습니다.")
             
