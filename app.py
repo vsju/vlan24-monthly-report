@@ -948,7 +948,97 @@ SENTENCE_TEMPLATE = "사용량 최대 {{max}}%, 평균 {{mean}}% 입니다."
                 else:
                     st.success(f"✅ {value}")
         
-        st.info("💡 환경 변수는 Replit Secrets에서 설정할 수 있습니다.")
+        st.info("💡 환경 변수는 Replit Secrets 또는 아래 Grafana 설정에서 관리할 수 있습니다.")
+        
+        st.divider()
+        
+        st.subheader("🔧 Grafana 설정")
+        
+        with st.expander("Grafana 연결 설정 편집", expanded=False):
+            st.markdown("""
+            Grafana 서버 연결 정보를 설정합니다. 설정은 `.streamlit/secrets.toml` 파일에 저장됩니다.
+            """)
+            
+            current_grafana_url = config.GRAFANA_URL or "http://localhost:3000"
+            current_grafana_key = config.API_KEY
+            current_verify_ssl = config.VERIFY_SSL
+            
+            new_grafana_url = st.text_input(
+                "Grafana URL",
+                value=current_grafana_url,
+                help="Grafana 서버 주소 (예: http://grafana.example.com:3000)",
+                key="grafana_url_input"
+            )
+            
+            new_grafana_key = st.text_input(
+                "Grafana API Key",
+                value=current_grafana_key if current_grafana_key else "",
+                type="password",
+                help="Grafana API 토큰 (Service Account Token 권장)",
+                key="grafana_key_input"
+            )
+            
+            new_verify_ssl = st.checkbox(
+                "SSL 인증서 검증",
+                value=current_verify_ssl,
+                help="프로덕션 환경에서는 항상 활성화하세요. 테스트 환경의 자체 서명 인증서인 경우만 비활성화하세요.",
+                key="grafana_ssl_input"
+            )
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("💾 Grafana 설정 저장", type="primary", key="save_grafana"):
+                    try:
+                        secrets_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".streamlit")
+                        secrets_file = os.path.join(secrets_dir, "secrets.toml")
+                        
+                        os.makedirs(secrets_dir, exist_ok=True)
+                        
+                        existing_secrets = {}
+                        if os.path.exists(secrets_file):
+                            try:
+                                import toml
+                                existing_secrets = toml.load(secrets_file)
+                            except:
+                                pass
+                        
+                        existing_secrets["GRAFANA_URL"] = new_grafana_url
+                        existing_secrets["GRAFANA_API_KEY"] = new_grafana_key
+                        existing_secrets["GRAFANA_VERIFY_SSL"] = "true" if new_verify_ssl else "false"
+                        
+                        import toml
+                        with open(secrets_file, "w") as f:
+                            toml.dump(existing_secrets, f)
+                        
+                        st.success("✅ Grafana 설정이 저장되었습니다!")
+                        st.info("⚠️ 변경사항을 적용하려면 브라우저를 새로고침하세요 (Ctrl+R 또는 F5)")
+                    except Exception as e:
+                        st.error(f"❌ 저장 중 오류 발생: {e}")
+            
+            with col2:
+                if st.button("🧪 연결 테스트", key="test_grafana"):
+                    with st.spinner("Grafana 서버에 연결 중..."):
+                        try:
+                            import requests
+                            headers = {"Authorization": f"Bearer {new_grafana_key}"}
+                            response = requests.get(
+                                f"{new_grafana_url}/api/org",
+                                headers=headers,
+                                verify=new_verify_ssl,
+                                timeout=5
+                            )
+                            if response.status_code == 200:
+                                org_data = response.json()
+                                st.success(f"✅ 연결 성공! 조직: {org_data.get('name', 'N/A')}")
+                            else:
+                                st.error(f"❌ 연결 실패 (HTTP {response.status_code})")
+                        except requests.exceptions.SSLError:
+                            st.error("❌ SSL 인증서 오류. 자체 서명 인증서인 경우 'SSL 인증서 검증'을 해제하세요.")
+                        except requests.exceptions.ConnectionError:
+                            st.error("❌ 연결 실패. Grafana URL을 확인하세요.")
+                        except Exception as e:
+                            st.error(f"❌ 오류: {str(e)}")
         
         st.divider()
         
