@@ -63,6 +63,51 @@ with tab2:
             st.success("폴더가 생성되었습니다!")
             st.rerun()
     else:
+        st.subheader("📤 템플릿 업로드")
+        uploaded_files = st.file_uploader(
+            "PowerPoint 템플릿 파일을 선택하세요 (.pptx)",
+            type=['pptx'],
+            accept_multiple_files=True,
+            key="template_uploader"
+        )
+        
+        if uploaded_files:
+            existing_files = []
+            new_files = []
+            for uploaded_file in uploaded_files:
+                file_path = os.path.join(config.BASE_TEMPLATE_DIR, uploaded_file.name)
+                if os.path.exists(file_path):
+                    existing_files.append(uploaded_file.name)
+                else:
+                    new_files.append(uploaded_file.name)
+            
+            if existing_files:
+                st.warning(f"⚠️ 다음 파일은 이미 존재합니다. 저장하면 덮어씁니다:\n" + "\n".join([f"- {f}" for f in existing_files]))
+            
+            if new_files:
+                st.info(f"📝 새로 저장될 파일:\n" + "\n".join([f"- {f}" for f in new_files]))
+            
+            if st.button("💾 업로드된 파일 저장", type="primary", key="save_templates"):
+                success_count = 0
+                overwritten_count = len(existing_files)
+                
+                for uploaded_file in uploaded_files:
+                    file_path = os.path.join(config.BASE_TEMPLATE_DIR, uploaded_file.name)
+                    with open(file_path, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    success_count += 1
+                
+                if overwritten_count > 0:
+                    st.success(f"✅ {success_count}개의 파일이 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
+                else:
+                    st.success(f"✅ {success_count}개의 템플릿 파일이 저장되었습니다!")
+                
+                import time
+                time.sleep(1)
+                st.rerun()
+        
+        st.divider()
+        
         templates = []
         for root, dirs, files in os.walk(config.BASE_TEMPLATE_DIR):
             for f in files:
