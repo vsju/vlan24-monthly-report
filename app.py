@@ -108,6 +108,134 @@ with tab2:
         
         st.divider()
         
+        st.subheader("🖼️ 이미지 업로드")
+        st.markdown("템플릿에 삽입할 이미지를 고객사별로 업로드합니다.")
+        
+        col1, col2 = st.columns([1, 2])
+        
+        with col1:
+            customer_folders = []
+            if os.path.exists(config.BASE_IMAGE_DIR):
+                for item in os.listdir(config.BASE_IMAGE_DIR):
+                    item_path = os.path.join(config.BASE_IMAGE_DIR, item)
+                    if os.path.isdir(item_path) and item not in ['template', 'completed_with_images', 'completed_final']:
+                        customer_folders.append(item)
+            
+            customer_input_mode = st.radio(
+                "고객사 폴더",
+                ["기존 폴더 선택", "새 폴더 생성"],
+                key="customer_mode"
+            )
+            
+            if customer_input_mode == "기존 폴더 선택":
+                if customer_folders:
+                    selected_customer = st.selectbox("고객사 선택", customer_folders, key="customer_folder_select")
+                else:
+                    st.warning("고객사 폴더가 없습니다. 새 폴더를 생성하세요.")
+                    selected_customer = None
+            else:
+                customer_input = st.text_input("고객사 이름 입력 (영문/숫자/한글만 사용)", key="new_customer_name")
+                if customer_input:
+                    sanitized = os.path.basename(customer_input.strip())
+                    if sanitized and sanitized not in ['.', '..'] and '/' not in customer_input and '\\' not in customer_input:
+                        selected_customer = sanitized
+                    else:
+                        st.error("⚠️ 올바르지 않은 폴더 이름입니다. 특수문자(/, \\)는 사용할 수 없습니다.")
+                        selected_customer = None
+                else:
+                    selected_customer = None
+        
+        with col2:
+            if selected_customer:
+                uploaded_images = st.file_uploader(
+                    f"이미지 파일을 선택하세요 ({selected_customer})",
+                    type=['png', 'jpg', 'jpeg', 'gif'],
+                    accept_multiple_files=True,
+                    key="image_uploader"
+                )
+                
+                if uploaded_images:
+                    customer_dir = os.path.join(config.BASE_IMAGE_DIR, selected_customer)
+                    customer_dir_abs = os.path.abspath(customer_dir)
+                    base_dir_abs = os.path.abspath(config.BASE_IMAGE_DIR)
+                    
+                    existing_images = []
+                    new_images = []
+                    invalid_images = []
+                    
+                    for uploaded_image in uploaded_images:
+                        safe_filename = os.path.basename(uploaded_image.name)
+                        
+                        if not safe_filename or safe_filename in ['.', '..'] or '/' in uploaded_image.name or '\\' in uploaded_image.name:
+                            invalid_images.append(uploaded_image.name)
+                            continue
+                        
+                        image_path = os.path.join(customer_dir, safe_filename)
+                        image_path_abs = os.path.abspath(image_path)
+                        
+                        if not image_path_abs.startswith(customer_dir_abs):
+                            invalid_images.append(uploaded_image.name)
+                            continue
+                        
+                        if os.path.exists(image_path):
+                            existing_images.append(safe_filename)
+                        else:
+                            new_images.append(safe_filename)
+                    
+                    if invalid_images:
+                        st.error(f"⚠️ 다음 파일은 올바르지 않은 이름입니다:\n" + "\n".join([f"- {f}" for f in invalid_images]))
+                    
+                    if existing_images:
+                        st.warning(f"⚠️ 다음 이미지는 이미 존재합니다:\n" + "\n".join([f"- {f}" for f in existing_images]))
+                    
+                    if new_images:
+                        st.info(f"📝 새로 저장될 이미지:\n" + "\n".join([f"- {f}" for f in new_images]))
+                    
+                    if st.button("💾 이미지 저장", type="primary", key="save_images"):
+                        os.makedirs(customer_dir, exist_ok=True)
+                        success_count = 0
+                        overwritten_count = len(existing_images)
+                        
+                        for uploaded_image in uploaded_images:
+                            safe_filename = os.path.basename(uploaded_image.name)
+                            
+                            if not safe_filename or safe_filename in ['.', '..'] or '/' in uploaded_image.name or '\\' in uploaded_image.name:
+                                continue
+                            
+                            image_path = os.path.join(customer_dir, safe_filename)
+                            image_path_abs = os.path.abspath(image_path)
+                            
+                            if not image_path_abs.startswith(customer_dir_abs):
+                                continue
+                            
+                            with open(image_path, "wb") as f:
+                                f.write(uploaded_image.getbuffer())
+                            success_count += 1
+                        
+                        if success_count == 0:
+                            st.error("❌ 저장할 수 있는 이미지가 없습니다.")
+                        elif overwritten_count > 0:
+                            st.success(f"✅ {success_count}개의 이미지가 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
+                        else:
+                            st.success(f"✅ {success_count}개의 이미지가 저장되었습니다!")
+                        
+                        import time
+                        time.sleep(1)
+                        st.rerun()
+        
+        if customer_folders:
+            with st.expander("📁 고객사별 이미지 현황"):
+                for folder in customer_folders:
+                    folder_path = os.path.join(config.BASE_IMAGE_DIR, folder)
+                    image_files = [f for f in os.listdir(folder_path) 
+                                   if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))]
+                    st.markdown(f"**{folder}**: {len(image_files)}개 이미지")
+                    if image_files:
+                        for img in image_files:
+                            st.text(f"  📷 {img}")
+        
+        st.divider()
+        
         templates = []
         for root, dirs, files in os.walk(config.BASE_TEMPLATE_DIR):
             for f in files:
