@@ -139,10 +139,91 @@ with tab3:
             with st.expander("상세 로그 보기"):
                 st.code(result.stdout + result.stderr)
 
+def update_config_file(base_dir):
+    """config.py 파일 업데이트"""
+    config_content = f'''import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+BASE_TEMPLATE_DIR = os.path.join(BASE_DIR, "{base_dir}", "template")
+BASE_IMAGE_DIR = os.path.join(BASE_DIR, "{base_dir}")
+OUTPUT_DIR_WITH_IMAGES = os.path.join(BASE_DIR, "{base_dir}", "completed_with_images")
+OUTPUT_DIR = os.path.join(BASE_DIR, "{base_dir}", "completed_final")
+
+GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000")
+API_KEY = os.getenv("GRAFANA_API_KEY", "")
+VERIFY_SSL = os.getenv("GRAFANA_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
+
+DASHBOARD_MAP = {{
+    "kpmo": "dejkgjz0jnoqoa",
+    "GIT": "aejkgkoze5nggb",
+    "hansystem": "cejnb5yyuk5q8e",
+    "humecca": "bejnb5db19blse",
+    "klcns": "eejnb31cylreod",
+    "sungwoo": "cejnb4aafury8e",
+    "thepnl": "fejkgid897xtsc",
+    "프리스타일": "fejkgfwux1fy8c"
+}}
+
+SENTENCE_TEMPLATE = "사용량 최대 {{max}}%, 평균 {{mean}}% 입니다."
+'''
+    with open("config.py", "w", encoding="utf-8") as f:
+        f.write(config_content)
+
 with tab4:
     st.header("⚙️ 설정")
     
-    st.subheader("디렉토리 구조")
+    st.subheader("📁 디렉토리 경로 설정")
+    
+    with st.expander("디렉토리 경로 편집", expanded=False):
+        st.info("기본 디렉토리 이름을 변경할 수 있습니다. 변경 후 페이지를 새로고침해야 적용됩니다.")
+        
+        current_base = "Report"
+        base_dir_name = st.text_input(
+            "기본 디렉토리 이름",
+            value=current_base,
+            help="모든 파일이 저장될 기본 폴더 이름입니다.",
+            key="base_dir_input"
+        )
+        
+        st.markdown("**변경 후 디렉토리 구조:**")
+        st.code(f"""
+{base_dir_name}/
+├── template/                  # 템플릿 파일
+├── completed_with_images/     # 이미지 삽입 결과
+└── completed_final/           # 최종 결과
+        """)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("💾 경로 저장", type="primary", key="save_paths"):
+                try:
+                    update_config_file(base_dir_name)
+                    
+                    new_dirs = [
+                        os.path.join(base_dir_name, "template"),
+                        os.path.join(base_dir_name, "completed_with_images"),
+                        os.path.join(base_dir_name, "completed_final")
+                    ]
+                    for d in new_dirs:
+                        os.makedirs(d, exist_ok=True)
+                    
+                    st.success("✅ 설정이 저장되었습니다! 페이지를 새로고침하세요.")
+                    st.info("⚠️ 변경사항을 적용하려면 브라우저를 새로고침하세요 (Ctrl+R 또는 F5)")
+                except Exception as e:
+                    st.error(f"오류 발생: {e}")
+        
+        with col2:
+            if st.button("🔄 기본값으로 복원", key="reset_paths"):
+                try:
+                    update_config_file("Report")
+                    st.success("✅ 기본 설정으로 복원되었습니다! 페이지를 새로고침하세요.")
+                except Exception as e:
+                    st.error(f"오류 발생: {e}")
+    
+    st.divider()
+    
+    st.subheader("현재 디렉토리 상태")
     dirs_info = {
         "템플릿 폴더": config.BASE_TEMPLATE_DIR,
         "이미지 폴더": config.BASE_IMAGE_DIR,
