@@ -500,6 +500,78 @@ else:
         
         st.info(f"**입력 폴더:** `{config.OUTPUT_DIR_WITH_IMAGES}`")
         
+        if not os.path.exists(config.OUTPUT_DIR_WITH_IMAGES):
+            st.warning("입력 폴더가 없습니다. 아래 버튼을 눌러 폴더를 생성하세요.")
+            if st.button("📁 폴더 생성", key="create_dirs_tab3"):
+                os.makedirs(config.OUTPUT_DIR_WITH_IMAGES, exist_ok=True)
+                os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+                st.success("폴더가 생성되었습니다!")
+                st.rerun()
+        else:
+            st.subheader("📤 템플릿 업로드")
+            st.markdown("통계를 삽입할 PowerPoint 파일을 업로드하세요. (이미 이미지가 삽입된 파일이거나 원본 템플릿)")
+            
+            uploaded_stats_files = st.file_uploader(
+                "PowerPoint 파일을 선택하세요 (.pptx)",
+                type=['pptx'],
+                accept_multiple_files=True,
+                key="stats_template_uploader"
+            )
+            
+            if uploaded_stats_files:
+                existing_files = []
+                new_files = []
+                for uploaded_file in uploaded_stats_files:
+                    file_path = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, uploaded_file.name)
+                    if os.path.exists(file_path):
+                        existing_files.append(uploaded_file.name)
+                    else:
+                        new_files.append(uploaded_file.name)
+                
+                if existing_files:
+                    st.warning(f"⚠️ 다음 파일은 이미 존재합니다. 저장하면 덮어씁니다:\n" + "\n".join([f"- {f}" for f in existing_files]))
+                
+                if new_files:
+                    st.info(f"📝 새로 저장될 파일:\n" + "\n".join([f"- {f}" for f in new_files]))
+                
+                if st.button("💾 업로드된 파일 저장", type="primary", key="save_stats_templates"):
+                    success_count = 0
+                    overwritten_count = len(existing_files)
+                    
+                    for uploaded_file in uploaded_stats_files:
+                        file_path = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, uploaded_file.name)
+                        with open(file_path, "wb") as f:
+                            f.write(uploaded_file.getbuffer())
+                        success_count += 1
+                    
+                    if overwritten_count > 0:
+                        st.success(f"✅ {success_count}개의 파일이 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
+                    else:
+                        st.success(f"✅ {success_count}개의 파일이 저장되었습니다!")
+                    
+                    import time
+                    time.sleep(1)
+                    st.rerun()
+            
+            st.divider()
+            
+            input_files = []
+            for root, dirs, files in os.walk(config.OUTPUT_DIR_WITH_IMAGES):
+                for f in files:
+                    if f.endswith('.pptx') and not f.startswith('~$'):
+                        input_files.append(f)
+            
+            if input_files:
+                st.success(f"✅ {len(input_files)}개의 입력 파일을 찾았습니다")
+                with st.expander("입력 파일 목록 보기"):
+                    for f in input_files:
+                        st.text(f"📄 {f}")
+            else:
+                st.warning("⚠️ 입력 파일이 없습니다. 위에서 파일을 업로드하거나 Step 1을 먼저 실행하세요.")
+        
+        st.divider()
+        st.subheader("🚀 통계 삽입 실행")
+        
         col1, col2 = st.columns(2)
         
         with col1:
