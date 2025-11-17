@@ -17,7 +17,12 @@ Automate PowerPoint report generation with image insertion and Grafana statistic
 pip install -r requirements.txt
 ```
 
-2. Run the interactive CLI:
+2. **Run the Web GUI** (Recommended):
+```bash
+streamlit run app.py
+```
+
+   Or use the interactive CLI:
 ```bash
 python main.py
 ```
@@ -25,6 +30,12 @@ python main.py
 3. Place your PowerPoint templates in `Report/template/`
 4. Place images in customer-specific folders under `Report/`
 5. Configure Grafana settings in `config.py` or use environment variables
+
+The web GUI provides an easy-to-use interface with:
+- Real-time status monitoring
+- One-click execution
+- Detailed logging
+- Configuration management
 
 ## Documentation
 

@@ -35,6 +35,8 @@ env/
 
 .pythonlibs/
 
+.streamlit/secrets.toml
+
 Report/completed_with_images/
 Report/completed_final/
 

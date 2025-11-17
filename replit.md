@@ -8,11 +8,14 @@ This project automates the generation of PowerPoint reports by:
 ## Project Structure
 ```
 .
+├── app.py                       # Streamlit web GUI (권장)
 ├── config.py                    # Configuration settings
-├── main.py                      # Main CLI interface
+├── main.py                      # CLI interface
 ├── insert_images.py             # Step 1: Image insertion script
 ├── numinsert3.py                # Step 2: Grafana statistics insertion script
 ├── requirements.txt             # Python dependencies
+├── .streamlit/
+│   └── config.toml              # Streamlit configuration
 ├── Report/
 │   ├── template/                # Place your PowerPoint templates here
 │   ├── completed_with_images/   # Intermediate output (Step 1)
@@ -47,8 +50,22 @@ Edit `config.py` to update the `DASHBOARD_MAP` dictionary with your customer nam
 
 ## How to Use
 
+### Using the Web GUI (권장)
+웹 브라우저에서 사용할 수 있는 GUI가 제공됩니다:
+```bash
+streamlit run app.py
+```
+
+Replit에서는 자동으로 실행되며, 브라우저에서 바로 사용하실 수 있습니다.
+
+GUI에서는 다음 기능을 제공합니다:
+- 📊 홈 대시보드: 전체 상태 확인
+- 🖼️ 이미지 삽입: 템플릿에 이미지 삽입
+- 📈 통계 삽입: Grafana 통계 데이터 삽입
+- ⚙️ 설정: 환경 설정 확인 및 관리
+
 ### Using the CLI
-Run the main program:
+터미널에서 대화형 메뉴를 사용하려면:
 ```bash
 python main.py
 ```
@@ -157,8 +174,9 @@ Set these in Replit Secrets if needed:
 - 2025-11-17: Initial setup for Replit environment
   - Converted hardcoded /root paths to configurable paths
   - Created CLI interface (main.py) with interactive menu and non-interactive flags
+  - **Added Streamlit web GUI (app.py) for easy browser-based usage**
   - Added config.py for centralized configuration
   - Set up proper directory structure
   - Added comprehensive documentation
   - Made SSL verification configurable (defaults to secure)
-  - Created workflow that completes successfully with --status flag
+  - Created workflow that runs Streamlit on port 5000
