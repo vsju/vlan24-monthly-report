@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Float, Text, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker, relationship, scoped_session
 from datetime import datetime
 import os
 
@@ -54,24 +54,48 @@ def get_database_url():
     """Get database URL from environment variables"""
     return os.getenv('DATABASE_URL')
 
+_engine = None
+_SessionFactory = None
+
+def get_engine():
+    """Get or create the global database engine (singleton pattern)"""
+    global _engine
+    if _engine is None:
+        database_url = get_database_url()
+        if not database_url:
+            raise ValueError("DATABASE_URL environment variable not set")
+        _engine = create_engine(
+            database_url,
+            pool_size=10,
+            max_overflow=20,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            echo=False
+        )
+    return _engine
+
+def get_session_factory():
+    """Get or create the global session factory (singleton pattern)"""
+    global _SessionFactory
+    if _SessionFactory is None:
+        engine = get_engine()
+        _SessionFactory = scoped_session(sessionmaker(bind=engine))
+    return _SessionFactory
+
 def create_db_engine():
-    """Create database engine"""
-    database_url = get_database_url()
-    if not database_url:
-        raise ValueError("DATABASE_URL environment variable not set")
-    return create_engine(database_url)
+    """Legacy function for backward compatibility - returns the global engine"""
+    return get_engine()
 
 def create_tables():
     """Create all tables in the database"""
-    engine = create_db_engine()
+    engine = get_engine()
     Base.metadata.create_all(engine)
     print("Database tables created successfully!")
 
 def get_session():
-    """Get a new database session"""
-    engine = create_db_engine()
-    Session = sessionmaker(bind=engine)
-    return Session()
+    """Get a new database session from the connection pool"""
+    SessionFactory = get_session_factory()
+    return SessionFactory()
 
 if __name__ == "__main__":
     create_tables()
