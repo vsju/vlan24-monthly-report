@@ -5,14 +5,7 @@ import datetime
 from dateutil.relativedelta import relativedelta
 import re
 import sys
-
-# ==============================================================================
-# 1. 기본 설정
-# ==============================================================================
-BASE_TEMPLATE_DIR = "/root/Report/template"
-BASE_IMAGE_DIR = "/root/Report"
-# 이미지만 삽입된 중간 파일을 저장할 폴더
-OUTPUT_DIR_WITH_IMAGES = "/root/Report/completed_with_images"
+import config
 
 # ==============================================================================
 # 2. 자동화 코드 본문
@@ -101,10 +94,10 @@ if __name__ == "__main__":
     print("--- 이미지 및 날짜 삽입 스크립트 시작 ---")
     date_info = calculate_previous_month_dates()
     date_replacements = date_info["placeholders"]
-    all_templates = find_all_templates(BASE_TEMPLATE_DIR)
+    all_templates = find_all_templates(config.BASE_TEMPLATE_DIR)
 
     if not all_templates:
-        print(f"Error: '{BASE_TEMPLATE_DIR}' 폴더에서 템플릿을 찾을 수 없습니다.")
+        print(f"Error: '{config.BASE_TEMPLATE_DIR}' 폴더에서 템플릿을 찾을 수 없습니다.")
         sys.exit(1)
 
     print(f"총 {len(all_templates)}개의 템플릿을 처리합니다.")
@@ -120,8 +113,8 @@ if __name__ == "__main__":
             replace_text_in_presentation(prs, date_replacements)
 
             # 2. 이미지 삽입
-            relative_path = os.path.relpath(os.path.dirname(template_path), BASE_TEMPLATE_DIR)
-            image_search_dir = os.path.join(BASE_IMAGE_DIR, relative_path)
+            relative_path = os.path.relpath(os.path.dirname(template_path), config.BASE_TEMPLATE_DIR)
+            image_search_dir = os.path.join(config.BASE_IMAGE_DIR, relative_path)
             if not os.path.isdir(image_search_dir):
                 parent_dir = os.path.dirname(image_search_dir)
                 if os.path.isdir(parent_dir):
@@ -167,7 +160,7 @@ if __name__ == "__main__":
                     print(f"    - {name}")
 
             # 3. 중간 결과 저장
-            output_subdir = os.path.join(OUTPUT_DIR_WITH_IMAGES, relative_path)
+            output_subdir = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, relative_path)
             if not os.path.exists(output_subdir):
                 os.makedirs(output_subdir)
 

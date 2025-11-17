@@ -9,33 +9,7 @@ import json
 import sys
 import time
 import gc
-
-# ==============================================================================
-# 1. 기본 설정 (보내주신 정보로 고정)
-# ==============================================================================
-# 이미지가 삽입된 파일들이 있는 폴더
-BASE_TEMPLATE_DIR = "/root/Report/completed_with_images" 
-# 최종 완성본을 저장할 폴더
-OUTPUT_DIR = "/root/Report/completed_final"
-
-# --- Grafana 연동 정보 ---
-GRAFANA_URL = "http://localhost:3000"
-API_KEY = "glsa_8RKuPs2USwIwxdafke3r4bcs93zkGO4E_462d232d"
-
-# --- 고객사 폴더 이름과 대시보드 UID를 연결하는 지도 ---
-DASHBOARD_MAP = {
-    "kpmo": "dejkgjz0jnoqoa",
-    "GIT": "aejkgkoze5nggb",
-    "hansystem": "cejnb5yyuk5q8e",
-    "humecca": "bejnb5db19blse",
-    "klcns": "eejnb31cylreod",
-    "sungwoo": "cejnb4aafury8e",
-    "thepnl": "fejkgid897xtsc",
-    "프리스타일": "fejkgfwux1fy8c"
-}
-
-# --- 자동 생성될 문장 형식 (수정 가능) ---
-SENTENCE_TEMPLATE = "사용량 최대 {max}%, 평균 {mean}% 입니다."
+import config
 
 # ==============================================================================
 # 2. 자동화 코드 본문 (수정 금지)
@@ -81,8 +55,8 @@ def find_all_panels_recursively(panel_list):
     return all_panels
 
 def get_dashboard_definition(dashboard_uid, retries=3, delay=1):
-    url = f"{GRAFANA_URL}/api/dashboards/uid/{dashboard_uid}"
-    headers = {"Authorization": f"Bearer {API_KEY}"}
+    url = f"{config.GRAFANA_URL}/api/dashboards/uid/{dashboard_uid}"
+    headers = {"Authorization": f"Bearer {config.API_KEY}"}
     for i in range(retries):
         try:
             response = requests.get(url, headers=headers, timeout=20, verify=False)
@@ -105,7 +79,7 @@ def find_panel_by_title(all_panels, title_from_placeholder):
     return None
 
 def get_grafana_stats_by_panel(panel, query_letter, start_ts, end_ts):
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {config.API_KEY}", "Content-Type": "application/json"}
 
     all_queries = panel.get('targets', [])
     # refId 일치하는 쿼리만 선택
@@ -133,7 +107,7 @@ def get_grafana_stats_by_panel(panel, query_letter, start_ts, end_ts):
         "from": str(start_ts),
         "to": str(end_ts)
     }
-    query_url = f"{GRAFANA_URL}/api/ds/query"
+    query_url = f"{config.GRAFANA_URL}/api/ds/query"
 
     try:
         response = requests.post(query_url, headers=headers,
@@ -200,10 +174,10 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         target_customer_path = sys.argv[1]
         print(f"'{target_customer_path}'에 대한 개별 처리를 시작합니다.")
-        all_files = find_templates_for_customer(BASE_TEMPLATE_DIR, target_customer_path)
+        all_files = find_templates_for_customer(config.OUTPUT_DIR_WITH_IMAGES, target_customer_path)
     else:
         print("--- 전체 숫자/통계 삽입을 시작합니다 ---")
-        all_files = find_all_templates(BASE_TEMPLATE_DIR)
+        all_files = find_all_templates(config.OUTPUT_DIR_WITH_IMAGES)
 
     if not all_files:
         print("처리할 파일이 없습니다.")
@@ -220,12 +194,12 @@ if __name__ == "__main__":
         print(f"작업 {i+1}/{len(all_files)}: '{os.path.basename(file_path)}'")
         
         final_replacements = date_info["placeholders"].copy()
-        relative_path = os.path.relpath(os.path.dirname(file_path), BASE_TEMPLATE_DIR)
+        relative_path = os.path.relpath(os.path.dirname(file_path), config.OUTPUT_DIR_WITH_IMAGES)
         customer_name = relative_path.split(os.sep)[0]
         
         dashboard_def = dashboard_defs_cache.get(customer_name)
         if not dashboard_def:
-            dashboard_uid = DASHBOARD_MAP.get(customer_name)
+            dashboard_uid = config.DASHBOARD_MAP.get(customer_name)
             if not dashboard_uid:
                 print(f"  > 경고: DASHBOARD_MAP에 '{customer_name}' 정보 없음. 통계 삽입 건너뜁니다.")
             else:
@@ -285,7 +259,7 @@ if __name__ == "__main__":
                             if valid_numbers:
                                 max_val = max(valid_numbers)
                                 mean_val = sum(valid_numbers) / len(valid_numbers)
-                                final_replacements[ph] = SENTENCE_TEMPLATE.format(max=f"{max_val:.1f}", mean=f"{mean_val:.1f}")
+                                final_replacements[ph] = config.SENTENCE_TEMPLATE.format(max=f"{max_val:.1f}", mean=f"{mean_val:.1f}")
                             else:
                                 final_replacements[ph] = "N/A"
                                 grafana_failures.append(ph)
@@ -304,7 +278,7 @@ if __name__ == "__main__":
                 for name in sorted(grafana_failures):
                     print(f"    - {name}")
 
-            output_subdir = os.path.join(OUTPUT_DIR, relative_path)
+            output_subdir = os.path.join(config.OUTPUT_DIR, relative_path)
             if not os.path.exists(output_subdir):
                 os.makedirs(output_subdir)
 
