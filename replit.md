@@ -4,18 +4,24 @@
 This project automates the generation of PowerPoint reports by:
 1. Inserting images into PowerPoint templates based on shape names
 2. Fetching data from Grafana dashboards and inserting statistics into presentations
+3. **Multi-user support** with authentication and role-based access control
+4. **Work history tracking** for audit and report retrieval
 
 ## Project Structure
 ```
 .
-├── app.py                       # Streamlit web GUI (권장)
+├── app.py                       # Streamlit web GUI with authentication (권장)
 ├── config.py                    # Configuration settings
 ├── main.py                      # CLI interface
 ├── insert_images.py             # Step 1: Image insertion script
 ├── numinsert3.py                # Step 2: Grafana statistics insertion script
+├── db_models.py                 # Database models (SQLAlchemy)
+├── db_utils.py                  # Database utility functions
+├── create_admin.py              # Admin user creation script
 ├── requirements.txt             # Python dependencies
 ├── .streamlit/
-│   └── config.toml              # Streamlit configuration
+│   ├── config.toml              # Streamlit configuration
+│   └── secrets.toml             # Grafana API configuration (git-ignored)
 ├── Report/
 │   ├── template/                # Place your PowerPoint templates here
 │   ├── completed_with_images/   # Intermediate output (Step 1)
@@ -58,10 +64,21 @@ streamlit run app.py
 
 Replit에서는 자동으로 실행되며, 브라우저에서 바로 사용하실 수 있습니다.
 
+**First-time setup:**
+1. Run the following command to create an admin account:
+   ```bash
+   python create_admin.py
+   ```
+2. Enter your desired username and secure password when prompted
+3. ⚠️ **Never use default or weak passwords in production!**
+
 GUI에서는 다음 기능을 제공합니다:
+- 🔐 로그인/로그아웃: 사용자 인증
 - 📊 홈 대시보드: 전체 상태 확인
 - 🖼️ 이미지 삽입: 템플릿에 이미지 삽입
 - 📈 통계 삽입: Grafana 통계 데이터 삽입
+- 📂 작업 이력: 과거 생성된 보고서 조회 및 다운로드
+- 👥 사용자 관리 (관리자 전용): 사용자 계정 생성/관리
 - ⚙️ 설정: 환경 설정 확인 및 관리
 
 ### Using the CLI
@@ -145,6 +162,12 @@ Key settings:
 - python-dateutil==2.8.2 - Date calculations
 - requests==2.31.0 - HTTP requests for Grafana API
 - urllib3==2.1.0 - HTTP client
+- streamlit - Web GUI framework
+- streamlit-authenticator - User authentication
+- sqlalchemy - Database ORM
+- psycopg2-binary - PostgreSQL adapter
+- bcrypt - Password hashing
+- pyyaml - Configuration file parsing
 
 ## Troubleshooting
 
@@ -170,13 +193,66 @@ Set these in Replit Secrets if needed:
 - `GRAFANA_API_KEY` - Grafana API token
 - `GRAFANA_VERIFY_SSL` - SSL verification (default: true, set to "false" only for testing)
 
+## Database Schema
+
+### Users Table
+- **id**: Primary key
+- **username**: Unique username
+- **email**: Email address
+- **password_hash**: Bcrypt hashed password
+- **full_name**: User's full name
+- **role**: 'admin' or 'user'
+- **is_active**: Account status
+- **created_at**, **last_login**: Timestamps
+
+### Report Runs Table
+- **id**: Primary key
+- **user_id**: Foreign key to users
+- **customer_name**: Customer/project name
+- **report_type**: 'images', 'stats', or 'full'
+- **template_name**: Template file name
+- **status**: 'success' or 'failed'
+- **created_at**, **duration_seconds**: Execution metadata
+- **log_data**: Execution logs (JSON)
+
+### Report Files Table
+- **id**: Primary key
+- **run_id**: Foreign key to report_runs
+- **filename**: Generated file name
+- **file_path**: Full file path
+- **file_size**: Size in bytes
+- **step**: 'step1' or 'step2'
+- **created_at**: Timestamp
+
+## User Management
+
+### Creating New Users
+Administrators can create new users through the "사용자 관리" tab in the web GUI, or use the command-line tool:
+```bash
+python create_admin.py
+```
+
+### User Roles
+- **Admin**: Full access including user management and all user reports
+- **User**: Access to own reports and standard features
+
 ## Recent Changes
 - 2025-11-17: Initial setup for Replit environment
   - Converted hardcoded /root paths to configurable paths
   - Created CLI interface (main.py) with interactive menu and non-interactive flags
-  - **Added Streamlit web GUI (app.py) for easy browser-based usage**
+  - Added Streamlit web GUI (app.py) for easy browser-based usage
   - Added config.py for centralized configuration
   - Set up proper directory structure
   - Added comprehensive documentation
   - Made SSL verification configurable (defaults to secure)
   - Created workflow that runs Streamlit on port 5000
+
+- 2025-11-17: Multi-user authentication system
+  - **PostgreSQL database integration** for user management
+  - **Session-based authentication** with bcrypt password hashing
+  - **Role-based access control** (admin/user roles)
+  - **User management page** for administrators
+  - **Work history tracking** to log all report generation activities
+  - **Report file archiving** with download capability
+  - Created database models (users, report_runs, report_files)
+  - Added admin account creation tool (create_admin.py)
