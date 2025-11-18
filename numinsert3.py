@@ -55,7 +55,7 @@ def find_all_panels_recursively(panel_list):
     return all_panels
 
 def get_dashboard_definition(dashboard_uid, retries=3, delay=1):
-    url = f"{config.GRAFANA_URL}/api/dashboards/uid/{dashboard_uid}"
+    url = f"{config.GRAFANA_URL.rstrip('/')}/api/dashboards/uid/{dashboard_uid}"
     headers = {"Authorization": f"Bearer {config.API_KEY}"}
     for i in range(retries):
         try:
@@ -107,7 +107,7 @@ def get_grafana_stats_by_panel(panel, query_letter, start_ts, end_ts):
         "from": str(start_ts),
         "to": str(end_ts)
     }
-    query_url = f"{config.GRAFANA_URL}/api/ds/query"
+    query_url = f"{config.GRAFANA_URL.rstrip('/')}/api/ds/query"
 
     try:
         response = requests.post(query_url, headers=headers,

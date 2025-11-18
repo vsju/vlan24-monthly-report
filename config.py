@@ -38,7 +38,7 @@ def get_secret(key, default=""):
     
     return default
 
-GRAFANA_URL = get_secret("GRAFANA_URL", "http://localhost:3000")
+GRAFANA_URL = get_secret("GRAFANA_URL", "http://localhost:3000").rstrip('/')
 API_KEY = get_secret("GRAFANA_API_KEY", "")
 VERIFY_SSL = get_secret("GRAFANA_VERIFY_SSL", "true").lower() in ("true", "1", "yes")
 
