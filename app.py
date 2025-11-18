@@ -545,26 +545,101 @@ else:
                 if new_files:
                     st.info(f"📝 새로 저장될 파일:\n" + "\n".join([f"- {f}" for f in new_files]))
                 
-                if st.button("💾 업로드된 파일 저장", type="primary", key="save_stats_templates"):
-                    success_count = 0
-                    overwritten_count = len(existing_files)
-                    
-                    os.makedirs(customer_folder, exist_ok=True)
-                    
-                    for uploaded_file in uploaded_stats_files:
-                        file_path = os.path.join(customer_folder, uploaded_file.name)
-                        with open(file_path, "wb") as f:
-                            f.write(uploaded_file.getbuffer())
-                        success_count += 1
-                    
-                    if overwritten_count > 0:
-                        st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
-                    else:
-                        st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다!")
-                    
-                    import time
-                    time.sleep(1)
-                    st.rerun()
+                col_btn1, col_btn2 = st.columns(2)
+                
+                with col_btn1:
+                    if st.button("💾 저장만 하기", type="secondary", key="save_only_stats_templates"):
+                        success_count = 0
+                        overwritten_count = len(existing_files)
+                        
+                        os.makedirs(customer_folder, exist_ok=True)
+                        
+                        for uploaded_file in uploaded_stats_files:
+                            file_path = os.path.join(customer_folder, uploaded_file.name)
+                            with open(file_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
+                            success_count += 1
+                        
+                        if overwritten_count > 0:
+                            st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
+                        else:
+                            st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다!")
+                        
+                        import time
+                        time.sleep(1)
+                        st.rerun()
+                
+                with col_btn2:
+                    if st.button("💾 저장 후 바로 통계 삽입", type="primary", key="save_and_run_stats"):
+                        import time as time_module
+                        
+                        # First, save files
+                        success_count = 0
+                        overwritten_count = len(existing_files)
+                        
+                        os.makedirs(customer_folder, exist_ok=True)
+                        
+                        for uploaded_file in uploaded_stats_files:
+                            file_path = os.path.join(customer_folder, uploaded_file.name)
+                            with open(file_path, "wb") as f:
+                                f.write(uploaded_file.getbuffer())
+                            success_count += 1
+                        
+                        if overwritten_count > 0:
+                            st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
+                        else:
+                            st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다!")
+                        
+                        time_module.sleep(0.5)
+                        
+                        # Then run statistics insertion for this customer
+                        st.info(f"🚀 {customer_for_upload} 고객사에 대한 통계 삽입을 시작합니다...")
+                        
+                        if not config.API_KEY:
+                            st.error("⚠️ Grafana API 키가 설정되지 않았습니다. 설정 탭에서 환경 변수를 확인하세요.")
+                        else:
+                            cmd = ["python", "numinsert3.py", customer_for_upload]
+                            
+                            with st.spinner("Grafana 통계를 삽입하는 중..."):
+                                result = subprocess.run(
+                                    cmd,
+                                    capture_output=True,
+                                    text=True
+                                )
+                                
+                                if result.returncode == 0:
+                                    st.success("✅ 통계 삽입이 완료되었습니다!")
+                                    
+                                    # Show generated files
+                                    customer_output_dir = os.path.join(config.OUTPUT_DIR, customer_for_upload)
+                                    if os.path.exists(customer_output_dir):
+                                        generated_files = [f for f in os.listdir(customer_output_dir) 
+                                                          if f.endswith('.pptx') and not f.startswith('~$')]
+                                        
+                                        if generated_files:
+                                            st.subheader("📥 생성된 파일")
+                                            for file_name in generated_files:
+                                                file_path = os.path.join(customer_output_dir, file_name)
+                                                file_size = os.path.getsize(file_path) / 1024
+                                                
+                                                col_file, col_download = st.columns([3, 1])
+                                                with col_file:
+                                                    st.text(f"📄 {file_name} ({file_size:.1f} KB)")
+                                                
+                                                with col_download:
+                                                    with open(file_path, "rb") as f:
+                                                        st.download_button(
+                                                            label="다운로드",
+                                                            data=f,
+                                                            file_name=file_name,
+                                                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                                            key=f"download_quick_{file_name}"
+                                                        )
+                                else:
+                                    st.error("❌ 통계 삽입 중 오류가 발생했습니다.")
+                                
+                                with st.expander("상세 로그 보기"):
+                                    st.code(result.stdout + result.stderr)
             
             st.divider()
             
@@ -596,28 +671,31 @@ else:
         st.divider()
         st.subheader("🚀 통계 삽입 실행")
         
-        col1, col2 = st.columns(2)
+        st.info("💡 팁: 위에서 템플릿 업로드 후 '저장 후 바로 통계 삽입' 버튼을 누르면 한 번에 처리됩니다.")
         
-        with col1:
-            process_all = st.radio(
-                "처리 범위",
-                ["전체 고객사", "특정 고객사"],
-                key="process_range"
-            )
+        process_all = st.radio(
+            "처리 범위",
+            ["전체 고객사 처리", "특정 고객사만 처리"],
+            index=0,
+            key="process_range",
+            help="전체 고객사를 선택하면 completed_with_images 폴더 내 모든 고객사 파일을 처리합니다"
+        )
         
-        with col2:
-            customer_name = ""
-            if process_all == "특정 고객사":
-                customer_list = [""] + list(config.DASHBOARD_MAP.keys())
-                customer_name = st.selectbox("고객사 선택", customer_list, key="customer_select")
+        customer_name = ""
+        if process_all == "특정 고객사만 처리":
+            customer_list = list(config.DASHBOARD_MAP.keys())
+            customer_name = st.selectbox("고객사 선택", customer_list, key="customer_select")
         
         if not config.API_KEY:
             st.error("⚠️ Grafana API 키가 설정되지 않았습니다. 설정 탭에서 환경 변수를 확인하세요.")
         
         if st.button("▶️ 통계 삽입 실행", type="primary", key="run_stats"):
             cmd = ["python", "numinsert3.py"]
-            if process_all == "특정 고객사" and customer_name:
+            if process_all == "특정 고객사만 처리" and customer_name:
                 cmd.append(customer_name)
+                st.info(f"📊 {customer_name} 고객사에 대해서만 통계를 삽입합니다.")
+            else:
+                st.info("📊 전체 고객사에 대해 통계를 삽입합니다.")
             
             with st.spinner("Grafana 통계를 삽입하는 중..."):
                 result = subprocess.run(
@@ -627,8 +705,33 @@ else:
                 )
                 
                 st.subheader("실행 결과")
+                
+                # Parse output for better display
+                output_text = result.stdout + result.stderr
+                
                 if result.returncode == 0:
                     st.success("✅ 통계 삽입이 완료되었습니다!")
+                    
+                    # Extract key information from output
+                    import re
+                    processed_files = re.findall(r"작업 \d+/\d+: '(.+?)'", output_text)
+                    failed_placeholders = re.findall(r"- (\{\{.+?\}\})", output_text)
+                    saved_files = re.findall(r"최종 보고서 저장 완료: (.+)", output_text)
+                    
+                    if processed_files:
+                        st.info(f"📊 처리된 파일 수: {len(processed_files)}개")
+                    
+                    if failed_placeholders:
+                        with st.expander(f"⚠️ Grafana 조회 실패 플레이스홀더 ({len(failed_placeholders)}개)", expanded=True):
+                            for ph in failed_placeholders:
+                                st.text(f"  • {ph}")
+                            st.caption("이 플레이스홀더는 'N/A'로 대체되었습니다. Grafana 대시보드에 해당 패널이 있는지 확인하세요.")
+                    
+                    if saved_files:
+                        st.success(f"✅ {len(saved_files)}개의 최종 보고서가 생성되었습니다.")
+                        with st.expander("생성된 파일 경로"):
+                            for file_path in saved_files:
+                                st.code(file_path, language=None)
                     
                     completed_files = []
                     if os.path.exists(config.OUTPUT_DIR):
@@ -636,27 +739,55 @@ else:
                             if f.endswith('.pptx') and not f.startswith('~$'):
                                 completed_files.append(f)
                     
-                    if completed_files:
+                    if completed_files or os.path.exists(config.OUTPUT_DIR):
                         st.subheader("📥 최종 완료된 파일 다운로드")
-                        st.info(f"총 {len(completed_files)}개의 최종 보고서가 생성되었습니다.")
                         
-                        for file_name in completed_files:
-                            file_path = os.path.join(config.OUTPUT_DIR, file_name)
-                            file_size = os.path.getsize(file_path) / 1024
+                        # Recursively find all files in OUTPUT_DIR, preserving full folder structure
+                        folder_files = {}
+                        for root, dirs, files in os.walk(config.OUTPUT_DIR):
+                            for file_name in files:
+                                if file_name.endswith('.pptx') and not file_name.startswith('~$'):
+                                    rel_path = os.path.relpath(root, config.OUTPUT_DIR)
+                                    # Use full relative path as the folder key (e.g., "GIT", "GIT2", "GIT3")
+                                    folder_key = rel_path if rel_path != '.' else '루트'
+                                    
+                                    if folder_key not in folder_files:
+                                        folder_files[folder_key] = []
+                                    
+                                    file_path = os.path.join(root, file_name)
+                                    file_size = os.path.getsize(file_path) / 1024
+                                    folder_files[folder_key].append({
+                                        'name': file_name,
+                                        'path': file_path,
+                                        'size': file_size
+                                    })
+                        
+                        if folder_files:
+                            total_files = sum(len(files) for files in folder_files.values())
+                            st.info(f"총 {total_files}개의 최종 보고서가 생성되었습니다.")
                             
-                            col_file, col_download = st.columns([3, 1])
-                            with col_file:
-                                st.text(f"📄 {file_name} ({file_size:.1f} KB)")
-                            
-                            with col_download:
-                                with open(file_path, "rb") as f:
-                                    st.download_button(
-                                        label="다운로드",
-                                        data=f,
-                                        file_name=file_name,
-                                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                                        key=f"download_final_{file_name}"
-                                    )
+                            for folder_path in sorted(folder_files.keys()):
+                                files = folder_files[folder_path]
+                                st.markdown(f"### 📁 {folder_path} ({len(files)}개)")
+                                
+                                for file_info in files:
+                                    col_file, col_download = st.columns([3, 1])
+                                    with col_file:
+                                        st.text(f"📄 {file_info['name']} ({file_info['size']:.1f} KB)")
+                                    
+                                    with col_download:
+                                        with open(file_info['path'], "rb") as f:
+                                            # Use folder path in key to ensure uniqueness
+                                            safe_key = folder_path.replace(os.sep, '_')
+                                            st.download_button(
+                                                label="다운로드",
+                                                data=f,
+                                                file_name=file_info['name'],
+                                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                                key=f"download_final_{safe_key}_{file_info['name']}"
+                                            )
+                        else:
+                            st.warning("생성된 파일이 없습니다.")
                 else:
                     st.error("❌ 오류가 발생했습니다.")
                 

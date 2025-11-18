@@ -256,3 +256,14 @@ python create_admin.py
   - **Report file archiving** with download capability
   - Created database models (users, report_runs, report_files)
   - Added admin account creation tool (create_admin.py)
+
+- 2025-11-18: Enhanced statistics insertion workflow
+  - **Optimized login performance** with SQLAlchemy connection pooling (reduced overhead by 200-600ms)
+  - **Grafana configuration editor** in Settings tab with connection testing
+  - **Improved statistics insertion UI/UX**:
+    - Dual-button upload: "저장만 하기" and "저장 후 바로 통계 삽입" for flexible workflows
+    - Simplified execution: Default to "전체 고객사 처리", optional specific customer selection
+    - Enhanced file download section with full sub-folder structure (GIT/GIT2/GIT3/GIT4 displayed separately)
+    - Structured log display: Shows processed file count, failed placeholders, and generated file paths
+  - **Sub-customer folder support**: Properly handles nested structures like GIT/GIT2/GIT3/GIT4
+  - **Smart Grafana API calls**: Only queries panels that have placeholders in the template (no unnecessary API calls)
