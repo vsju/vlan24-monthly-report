@@ -9,6 +9,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import image_processor
 import stats_processor
+import template_generator
+import support_manager
+import recommendation_generator
 
 app = Flask(__name__)
 CORS(app)
@@ -98,6 +101,52 @@ def process_all():
     except Exception as e:
         results["success"] = False
         results["errors"].append(f"전체 프로세스 실패: {str(e)}")
+    
+    return jsonify(results), 200 if results["success"] else 400
+
+@app.route('/api/template/generate', methods=['POST'])
+def generate_template():
+    data = request.get_json() or {}
+    customer_name = data.get('customer_name')
+    selected_panels = data.get('selected_panels', None)
+    
+    if not customer_name:
+        return jsonify({"success": False, "errors": ["customer_name이 필요합니다."]}), 400
+    
+    results = template_generator.generate_template(customer_name, selected_panels)
+    
+    return jsonify(results), 200 if results["success"] else 400
+
+@app.route('/api/support/add', methods=['POST'])
+def add_support():
+    data = request.get_json() or {}
+    file_path = data.get('file_path')
+    support_entries = data.get('support_entries', [])
+    
+    if not file_path:
+        return jsonify({"success": False, "errors": ["file_path가 필요합니다."]}), 400
+    
+    if not support_entries:
+        return jsonify({"success": False, "errors": ["support_entries가 필요합니다."]}), 400
+    
+    results = support_manager.add_support_history(file_path, support_entries)
+    
+    return jsonify(results), 200 if results["success"] else 400
+
+@app.route('/api/recommendation/auto', methods=['POST'])
+def auto_recommend():
+    data = request.get_json() or {}
+    file_path = data.get('file_path')
+    customer_name = data.get('customer_name')
+    threshold = data.get('threshold', 90)
+    
+    if not file_path:
+        return jsonify({"success": False, "errors": ["file_path가 필요합니다."]}), 400
+    
+    if not customer_name:
+        return jsonify({"success": False, "errors": ["customer_name이 필요합니다."]}), 400
+    
+    results = recommendation_generator.add_recommendations(file_path, customer_name, threshold)
     
     return jsonify(results), 200 if results["success"] else 400
 
