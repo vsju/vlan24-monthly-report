@@ -511,6 +511,13 @@ else:
             st.subheader("📤 템플릿 업로드")
             st.markdown("통계를 삽입할 PowerPoint 파일을 업로드하세요. (이미 이미지가 삽입된 파일이거나 원본 템플릿)")
             
+            customer_for_upload = st.selectbox(
+                "고객사 선택",
+                options=list(config.DASHBOARD_MAP.keys()),
+                help="파일이 저장될 고객사 폴더를 선택하세요",
+                key="customer_for_upload"
+            )
+            
             uploaded_stats_files = st.file_uploader(
                 "PowerPoint 파일을 선택하세요 (.pptx)",
                 type=['pptx'],
@@ -518,15 +525,19 @@ else:
                 key="stats_template_uploader"
             )
             
-            if uploaded_stats_files:
+            if uploaded_stats_files and customer_for_upload:
+                customer_folder = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, customer_for_upload)
+                
                 existing_files = []
                 new_files = []
                 for uploaded_file in uploaded_stats_files:
-                    file_path = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, uploaded_file.name)
+                    file_path = os.path.join(customer_folder, uploaded_file.name)
                     if os.path.exists(file_path):
                         existing_files.append(uploaded_file.name)
                     else:
                         new_files.append(uploaded_file.name)
+                
+                st.info(f"📁 저장 경로: `{customer_folder}/`")
                 
                 if existing_files:
                     st.warning(f"⚠️ 다음 파일은 이미 존재합니다. 저장하면 덮어씁니다:\n" + "\n".join([f"- {f}" for f in existing_files]))
@@ -538,16 +549,18 @@ else:
                     success_count = 0
                     overwritten_count = len(existing_files)
                     
+                    os.makedirs(customer_folder, exist_ok=True)
+                    
                     for uploaded_file in uploaded_stats_files:
-                        file_path = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, uploaded_file.name)
+                        file_path = os.path.join(customer_folder, uploaded_file.name)
                         with open(file_path, "wb") as f:
                             f.write(uploaded_file.getbuffer())
                         success_count += 1
                     
                     if overwritten_count > 0:
-                        st.success(f"✅ {success_count}개의 파일이 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
+                        st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다! ({overwritten_count}개 덮어쓰기)")
                     else:
-                        st.success(f"✅ {success_count}개의 파일이 저장되었습니다!")
+                        st.success(f"✅ {success_count}개의 파일이 `{customer_for_upload}/` 폴더에 저장되었습니다!")
                     
                     import time
                     time.sleep(1)
@@ -555,17 +568,28 @@ else:
             
             st.divider()
             
-            input_files = []
-            for root, dirs, files in os.walk(config.OUTPUT_DIR_WITH_IMAGES):
-                for f in files:
-                    if f.endswith('.pptx') and not f.startswith('~$'):
-                        input_files.append(f)
+            st.subheader("📂 고객사별 파일 현황")
             
-            if input_files:
-                st.success(f"✅ {len(input_files)}개의 입력 파일을 찾았습니다")
-                with st.expander("입력 파일 목록 보기"):
-                    for f in input_files:
-                        st.text(f"📄 {f}")
+            customer_files = {}
+            if os.path.exists(config.OUTPUT_DIR_WITH_IMAGES):
+                for customer in config.DASHBOARD_MAP.keys():
+                    customer_folder = os.path.join(config.OUTPUT_DIR_WITH_IMAGES, customer)
+                    if os.path.exists(customer_folder):
+                        files = [f for f in os.listdir(customer_folder) 
+                                if f.endswith('.pptx') and not f.startswith('~$')]
+                        if files:
+                            customer_files[customer] = files
+            
+            total_files = sum(len(files) for files in customer_files.values())
+            
+            if customer_files:
+                st.success(f"✅ 총 {total_files}개의 입력 파일을 찾았습니다 ({len(customer_files)}개 고객사)")
+                
+                with st.expander("고객사별 파일 목록 보기"):
+                    for customer, files in sorted(customer_files.items()):
+                        st.markdown(f"**{customer}** ({len(files)}개)")
+                        for f in files:
+                            st.text(f"  📄 {f}")
             else:
                 st.warning("⚠️ 입력 파일이 없습니다. 위에서 파일을 업로드하거나 Step 1을 먼저 실행하세요.")
         
