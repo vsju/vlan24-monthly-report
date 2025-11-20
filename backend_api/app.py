@@ -1,17 +1,17 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, send_from_directory
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 import os
 import sys
 import traceback
+import zipfile
+import io
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 import image_processor
 import stats_processor
-import template_generator
-import support_manager
-import recommendation_generator
 
 app = Flask(__name__)
 CORS(app)
@@ -104,51 +104,154 @@ def process_all():
     
     return jsonify(results), 200 if results["success"] else 400
 
-@app.route('/api/template/generate', methods=['POST'])
-def generate_template():
-    data = request.get_json() or {}
-    customer_name = data.get('customer_name')
-    selected_panels = data.get('selected_panels', None)
+@app.route('/api/upload/templates', methods=['POST'])
+def upload_templates():
+    if 'files' not in request.files:
+        return jsonify({"success": False, "error": "파일이 없습니다."}), 400
     
-    if not customer_name:
-        return jsonify({"success": False, "errors": ["customer_name이 필요합니다."]}), 400
+    files = request.files.getlist('files')
+    customer = request.form.get('customer', '')
     
-    results = template_generator.generate_template(customer_name, selected_panels)
+    uploaded_files = []
+    errors = []
     
-    return jsonify(results), 200 if results["success"] else 400
+    for file in files:
+        if file.filename == '':
+            continue
+        
+        if file and file.filename.endswith('.pptx'):
+            filename = secure_filename(file.filename)
+            
+            if customer:
+                target_dir = os.path.join(config.BASE_TEMPLATE_DIR, customer)
+            else:
+                target_dir = config.BASE_TEMPLATE_DIR
+            
+            os.makedirs(target_dir, exist_ok=True)
+            filepath = os.path.join(target_dir, filename)
+            file.save(filepath)
+            uploaded_files.append(filepath)
+        else:
+            errors.append(f"'{file.filename}'은(는) .pptx 파일이 아닙니다.")
+    
+    return jsonify({
+        "success": len(uploaded_files) > 0,
+        "uploaded_files": uploaded_files,
+        "errors": errors
+    })
 
-@app.route('/api/support/add', methods=['POST'])
-def add_support():
-    data = request.get_json() or {}
-    file_path = data.get('file_path')
-    support_entries = data.get('support_entries', [])
+@app.route('/api/upload/images', methods=['POST'])
+def upload_images():
+    if 'files' not in request.files:
+        return jsonify({"success": False, "error": "파일이 없습니다."}), 400
     
-    if not file_path:
-        return jsonify({"success": False, "errors": ["file_path가 필요합니다."]}), 400
+    files = request.files.getlist('files')
+    customer = request.form.get('customer', '')
     
-    if not support_entries:
-        return jsonify({"success": False, "errors": ["support_entries가 필요합니다."]}), 400
+    if not customer:
+        return jsonify({"success": False, "error": "customer가 필요합니다."}), 400
     
-    results = support_manager.add_support_history(file_path, support_entries)
+    uploaded_files = []
+    errors = []
     
-    return jsonify(results), 200 if results["success"] else 400
+    target_dir = os.path.join(config.BASE_IMAGE_DIR, customer)
+    os.makedirs(target_dir, exist_ok=True)
+    
+    for file in files:
+        if file.filename == '':
+            continue
+        
+        if file and file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(target_dir, filename)
+            file.save(filepath)
+            uploaded_files.append(filepath)
+        else:
+            errors.append(f"'{file.filename}'은(는) 지원되지 않는 이미지 형식입니다.")
+    
+    return jsonify({
+        "success": len(uploaded_files) > 0,
+        "uploaded_files": uploaded_files,
+        "errors": errors
+    })
 
-@app.route('/api/recommendation/auto', methods=['POST'])
-def auto_recommend():
-    data = request.get_json() or {}
-    file_path = data.get('file_path')
-    customer_name = data.get('customer_name')
-    threshold = data.get('threshold', 90)
+@app.route('/api/download/results', methods=['GET'])
+def download_results():
+    customer = request.args.get('customer', None)
     
-    if not file_path:
-        return jsonify({"success": False, "errors": ["file_path가 필요합니다."]}), 400
+    if customer:
+        target_dir = os.path.join(config.OUTPUT_DIR, customer)
+        if not os.path.exists(target_dir):
+            return jsonify({"success": False, "error": f"고객사 '{customer}' 결과가 없습니다."}), 404
+        
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(target_dir):
+                for file in files:
+                    if file.endswith('.pptx'):
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, config.OUTPUT_DIR)
+                        zipf.write(file_path, arcname)
+        
+        memory_file.seek(0)
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=f'{customer}_results.zip'
+        )
+    else:
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(config.OUTPUT_DIR):
+                for file in files:
+                    if file.endswith('.pptx'):
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, config.OUTPUT_DIR)
+                        zipf.write(file_path, arcname)
+        
+        memory_file.seek(0)
+        return send_file(
+            memory_file,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name='all_results.zip'
+        )
+
+@app.route('/api/files/list', methods=['GET'])
+def list_files():
+    file_type = request.args.get('type', 'results')
+    customer = request.args.get('customer', None)
     
-    if not customer_name:
-        return jsonify({"success": False, "errors": ["customer_name이 필요합니다."]}), 400
+    if file_type == 'results':
+        base_dir = config.OUTPUT_DIR
+    elif file_type == 'templates':
+        base_dir = config.BASE_TEMPLATE_DIR
+    else:
+        return jsonify({"success": False, "error": "잘못된 타입입니다."}), 400
     
-    results = recommendation_generator.add_recommendations(file_path, customer_name, threshold)
+    files_list = []
     
-    return jsonify(results), 200 if results["success"] else 400
+    if customer:
+        target_dir = os.path.join(base_dir, customer)
+        if os.path.exists(target_dir):
+            for root, dirs, files in os.walk(target_dir):
+                for file in files:
+                    if file.endswith('.pptx'):
+                        rel_path = os.path.relpath(os.path.join(root, file), base_dir)
+                        files_list.append(rel_path)
+    else:
+        for root, dirs, files in os.walk(base_dir):
+            for file in files:
+                if file.endswith('.pptx'):
+                    rel_path = os.path.relpath(os.path.join(root, file), base_dir)
+                    files_list.append(rel_path)
+    
+    return jsonify({
+        "success": True,
+        "files": files_list,
+        "count": len(files_list)
+    })
 
 @app.errorhandler(Exception)
 def handle_error(error):

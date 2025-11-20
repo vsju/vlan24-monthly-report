@@ -4,112 +4,88 @@
 This project automates the generation of PowerPoint reports by:
 1. Inserting images into PowerPoint templates based on shape names
 2. Fetching data from Grafana dashboards and inserting statistics into presentations
-3. **Multi-user support** with authentication and role-based access control
-4. **Work history tracking** for audit and report retrieval
+
+**Architecture:** Client-Server separation
+- **4C4M Server**: Streamlit UI (frontend only)
+- **Zabbix Server**: Flask API + All processing (backend)
 
 ## Project Structure
 ```
 .
-├── app.py                       # Streamlit web GUI with authentication (권장)
-├── config.py                    # Configuration settings
-├── main.py                      # CLI interface
-├── insert_images.py             # Step 1: Image insertion script
-├── numinsert3.py                # Step 2: Grafana statistics insertion script
-├── db_models.py                 # Database models (SQLAlchemy)
-├── db_utils.py                  # Database utility functions
-├── create_admin.py              # Admin user creation script
-├── requirements.txt             # Python dependencies
-├── .streamlit/
-│   ├── config.toml              # Streamlit configuration
-│   └── secrets.toml             # Grafana API configuration (git-ignored)
-├── Report/
-│   ├── template/                # Place your PowerPoint templates here
-│   ├── completed_with_images/   # Intermediate output (Step 1)
-│   └── completed_final/         # Final output (Step 2)
+├── client_app.py                # Streamlit UI (4C4M 서버용)
+├── backend_api/                 # Flask API (Zabbix 서버용)
+│   ├── app.py                   # Flask API 메인
+│   ├── config.py                # 설정
+│   ├── image_processor.py       # 이미지 삽입 로직
+│   ├── stats_processor.py       # 통계 삽입 로직
+│   ├── requirements.txt         # Backend 의존성
+│   ├── README.md                # Backend 가이드
+│   └── Report/                  # 파일 저장 위치 (자동 생성)
+│       ├── template/            # 템플릿 저장
+│       ├── [customer]/          # 고객사별 이미지
+│       ├── completed_with_images/  # Step 1 출력
+│       └── completed_final/     # Step 2 출력
+├── DEPLOYMENT.md                # 배포 가이드
+├── app.py                       # 구버전 (사용 안 함)
+├── insert_images.py             # 구버전 (사용 안 함)
+├── numinsert3.py                # 구버전 (사용 안 함)
 └── replit.md                    # This file
 ```
 
-## Setup Instructions
+## Deployment
 
-### 1. Directory Structure
-The tool requires the following directories (created automatically on first run):
-- `Report/template/` - Place your PowerPoint template files (.pptx) here
-- `Report/` - Place image files (.png, .jpg, .jpeg, .gif) here (organized by customer folders)
-- `Report/completed_with_images/` - Intermediate files after image insertion
-- `Report/completed_final/` - Final reports with statistics
+전체 배포 가이드는 `DEPLOYMENT.md` 파일을 참조하세요.
 
-### 2. Grafana Configuration
-If you want to use the Grafana statistics feature, set these environment variables:
-- `GRAFANA_URL` - Your Grafana server URL (default: http://localhost:3000)
-- `GRAFANA_API_KEY` - Your Grafana API key
-- `GRAFANA_VERIFY_SSL` - Whether to verify SSL certificates (default: true)
-  - Set to "false" only if using self-signed certificates or testing environments
-  - For production, always keep this as "true" for security
+### 1. Zabbix 서버 (Backend API)
 
-To set environment variables in Replit:
-1. Click on "Tools" in the left sidebar
-2. Select "Secrets"
-3. Add your secrets with the key names above
+```bash
+cd backend_api
+pip install -r requirements.txt
+
+export GRAFANA_URL="http://zabbix.vlan24.co.kr:3000"
+export GRAFANA_API_KEY="your_api_key"
+export GRAFANA_VERIFY_SSL="false"
+
+python app.py
+```
+
+Flask API가 `http://0.0.0.0:5001`에서 실행됩니다.
+
+### 2. 4C4M 서버 (Frontend UI)
+
+```bash
+pip install streamlit requests
+
+export BACKEND_API_URL="http://<Zabbix_Server_IP>:5001"
+
+streamlit run client_app.py
+```
+
+Streamlit UI가 `http://localhost:8501`에서 실행됩니다.
 
 ### 3. Customer Dashboard Mapping
-Edit `config.py` to update the `DASHBOARD_MAP` dictionary with your customer names and Grafana dashboard UIDs.
+
+`backend_api/config.py`의 `DASHBOARD_MAP`에서 고객사와 대시보드 UID 매핑을 설정합니다.
 
 ## How to Use
 
-### Using the Web GUI (권장)
-웹 브라우저에서 사용할 수 있는 GUI가 제공됩니다:
-```bash
-streamlit run app.py
-```
+### Web GUI (Streamlit)
 
-Replit에서는 자동으로 실행되며, 브라우저에서 바로 사용하실 수 있습니다.
+1. **템플릿 업로드**
+   - 이미지 삽입 탭에서 PowerPoint 템플릿 업로드
+   - 고객사 이름 지정 (선택사항)
 
-**First-time setup:**
-1. Run the following command to create an admin account:
-   ```bash
-   python create_admin.py
-   ```
-2. Enter your desired username and secure password when prompted
-3. ⚠️ **Never use default or weak passwords in production!**
+2. **이미지 업로드**
+   - 고객사별 이미지 파일 업로드
 
-GUI에서는 다음 기능을 제공합니다:
-- 🔐 로그인/로그아웃: 사용자 인증
-- 📊 홈 대시보드: 전체 상태 확인
-- 🖼️ 이미지 삽입: 템플릿에 이미지 삽입
-- 📈 통계 삽입: Grafana 통계 데이터 삽입
-- 📂 작업 이력: 과거 생성된 보고서 조회 및 다운로드
-- 👥 사용자 관리 (관리자 전용): 사용자 계정 생성/관리
-- ⚙️ 설정: 환경 설정 확인 및 관리
+3. **이미지 삽입 실행**
+   - 특정 고객사 또는 전체 고객사 처리
 
-### Using the CLI
-터미널에서 대화형 메뉴를 사용하려면:
-```bash
-python main.py
-```
+4. **통계 삽입 실행**
+   - Grafana 데이터 조회 및 플레이스홀더 치환
 
-The menu provides the following options:
-1. **Image Insertion (Step 1)** - Process templates and insert images
-2. **Grafana Statistics Insertion (Step 2)** - Add Grafana data to presentations
-3. **Full Process** - Run both steps sequentially
-4. **Create Directories** - Set up the directory structure
-5. **View Configuration** - Display current settings
-6. **Exit** - Close the program
-
-### Running Scripts Directly
-
-#### Image Insertion Only
-```bash
-python insert_images.py
-```
-
-#### Statistics Insertion Only
-```bash
-# Process all customers
-python numinsert3.py
-
-# Process specific customer
-python numinsert3.py customer_name
-```
+5. **결과 다운로드**
+   - 완성된 보고서 ZIP 파일 다운로드
 
 ## Workflow
 
@@ -158,16 +134,18 @@ Key settings:
 - `SENTENCE_TEMPLATE` - Output format for statistics
 
 ## Dependencies
+
+### Backend (Zabbix 서버)
+- flask==3.0.0 - Web API framework
+- flask-cors==4.0.0 - CORS support
 - python-pptx==0.6.23 - PowerPoint manipulation
 - python-dateutil==2.8.2 - Date calculations
 - requests==2.31.0 - HTTP requests for Grafana API
 - urllib3==2.1.0 - HTTP client
+
+### Frontend (4C4M 서버)
 - streamlit - Web GUI framework
-- streamlit-authenticator - User authentication
-- sqlalchemy - Database ORM
-- psycopg2-binary - PostgreSQL adapter
-- bcrypt - Password hashing
-- pyyaml - Configuration file parsing
+- requests - HTTP client for API calls
 
 ## Troubleshooting
 
@@ -193,77 +171,55 @@ Set these in Replit Secrets if needed:
 - `GRAFANA_API_KEY` - Grafana API token
 - `GRAFANA_VERIFY_SSL` - SSL verification (default: true, set to "false" only for testing)
 
-## Database Schema
+## Architecture
 
-### Users Table
-- **id**: Primary key
-- **username**: Unique username
-- **email**: Email address
-- **password_hash**: Bcrypt hashed password
-- **full_name**: User's full name
-- **role**: 'admin' or 'user'
-- **is_active**: Account status
-- **created_at**, **last_login**: Timestamps
+### Client-Server Separation (옵션 A)
 
-### Report Runs Table
-- **id**: Primary key
-- **user_id**: Foreign key to users
-- **customer_name**: Customer/project name
-- **report_type**: 'images', 'stats', or 'full'
-- **template_name**: Template file name
-- **status**: 'success' or 'failed'
-- **created_at**, **duration_seconds**: Execution metadata
-- **log_data**: Execution logs (JSON)
-
-### Report Files Table
-- **id**: Primary key
-- **run_id**: Foreign key to report_runs
-- **filename**: Generated file name
-- **file_path**: Full file path
-- **file_size**: Size in bytes
-- **step**: 'step1' or 'step2'
-- **created_at**: Timestamp
-
-## User Management
-
-### Creating New Users
-Administrators can create new users through the "사용자 관리" tab in the web GUI, or use the command-line tool:
-```bash
-python create_admin.py
+```
+┌─────────────────────────┐      ┌──────────────────────────┐
+│  4C4M 서버              │      │  Zabbix 서버             │
+│  ─────────────────      │ HTTP │  ─────────────────       │
+│  • Streamlit UI만       │ ───> │  • Flask API             │
+│  • client_app.py        │      │  • 스크립트 실행          │
+│                         │      │  • Grafana 연동          │
+└─────────────────────────┘      │  • 파일 저장/처리         │
+                                 └──────────────────────────┘
 ```
 
-### User Roles
-- **Admin**: Full access including user management and all user reports
-- **User**: Access to own reports and standard features
+**특징:**
+- 4C4M 서버: 가벼운 UI만 (사용자 접근 포인트)
+- Zabbix 서버: 모든 비즈니스 로직 및 파일 처리
+- 네트워크: 같은 PVE node 내부 통신
+- DB: 현재 미사용 (추후 추가 가능)
 
 ## Recent Changes
-- 2025-11-17: Initial setup for Replit environment
-  - Converted hardcoded /root paths to configurable paths
-  - Created CLI interface (main.py) with interactive menu and non-interactive flags
-  - Added Streamlit web GUI (app.py) for easy browser-based usage
-  - Added config.py for centralized configuration
-  - Set up proper directory structure
-  - Added comprehensive documentation
-  - Made SSL verification configurable (defaults to secure)
-  - Created workflow that runs Streamlit on port 5000
 
-- 2025-11-17: Multi-user authentication system
-  - **PostgreSQL database integration** for user management
-  - **Session-based authentication** with bcrypt password hashing
-  - **Role-based access control** (admin/user roles)
-  - **User management page** for administrators
-  - **Work history tracking** to log all report generation activities
-  - **Report file archiving** with download capability
-  - Created database models (users, report_runs, report_files)
-  - Added admin account creation tool (create_admin.py)
+- 2025-11-20: **아키텍처 재설계 - 클라이언트/서버 분리 (옵션 A)**
+  - **Backend (Zabbix 서버)**:
+    - Flask API 백엔드 구축 (backend_api/)
+    - 핵심 엔드포인트만 유지: /api/process/images, /api/process/statistics, /api/process/all
+    - 파일 업로드/다운로드 API 추가
+    - 기존 스크립트 모듈화 (image_processor.py, stats_processor.py)
+  - **Frontend (4C4M 서버)**:
+    - Streamlit UI 단순화 (client_app.py)
+    - DB 및 인증 완전 제거 (추후 추가 가능하도록 설계)
+    - API 클라이언트로만 작동
+  - **배포**:
+    - 상세 배포 가이드 작성 (DEPLOYMENT.md)
+    - Systemd 서비스 설정 예시 포함
+    - 네트워크 및 방화벽 설정 가이드
+  - **제거된 기능** (MVP 범위 외):
+    - 자동 템플릿 생성
+    - 지원 내역 추가
+    - 권고사항 자동 생성
+    - 사용자 인증/관리
+    - 작업 이력 DB
 
-- 2025-11-18: Enhanced statistics insertion workflow
-  - **Optimized login performance** with SQLAlchemy connection pooling (reduced overhead by 200-600ms)
-  - **Grafana configuration editor** in Settings tab with connection testing
-  - **Improved statistics insertion UI/UX**:
-    - Dual-button upload: "저장만 하기" and "저장 후 바로 통계 삽입" for flexible workflows
-    - Simplified execution: Default to "전체 고객사 처리", optional specific customer selection
-    - Enhanced file download section with full sub-folder structure (GIT/GIT2/GIT3/GIT4 displayed separately)
-    - Structured log display: Shows processed file count, failed placeholders, and generated file paths
-  - **Sub-customer folder support**: Properly handles nested structures like GIT/GIT2/GIT3/GIT4
-  - **Smart Grafana API calls**: Only queries panels that have placeholders in the template (no unnecessary API calls)
+- 2025-11-18: Grafana URL 정규화 - 이중 슬래시 404 에러 수정
+  - config.py, numinsert3.py에서 URL 끝 슬래시 자동 제거
+  - 탭 이름 수정 (사용자 관리/설정 순서)
+
+- 2025-11-17: Initial Replit setup
+  - 경로 설정 가능하도록 변경
+  - CLI 및 Streamlit GUI 추가
+  - 디렉토리 구조 설정
