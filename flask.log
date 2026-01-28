@@ -1,0 +1,28 @@
+nohup: ignoring input
+/home/vlan24/ppt-backend/app.py:2124: UserWarning: WOPI_JWT_SECRET not set! Using insecure default. Set WOPI_JWT_SECRET environment variable.
+  warnings.warn("WOPI_JWT_SECRET not set! Using insecure default. Set WOPI_JWT_SECRET environment variable.")
+ * Serving Flask app 'app'
+ * Debug mode: on
+2026-01-27 11:00:03,806 - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5001
+ * Running on http://192.168.10.30:5001
+2026-01-27 11:00:03,807 - INFO - [33mPress CTRL+C to quit[0m
+2026-01-27 11:00:03,811 - INFO -  * Restarting with stat
+/home/vlan24/ppt-backend/app.py:2124: UserWarning: WOPI_JWT_SECRET not set! Using insecure default. Set WOPI_JWT_SECRET environment variable.
+  warnings.warn("WOPI_JWT_SECRET not set! Using insecure default. Set WOPI_JWT_SECRET environment variable.")
+2026-01-27 11:00:05,529 - WARNING -  * Debugger is active!
+2026-01-27 11:00:05,532 - INFO -  * Debugger PIN: 102-728-413
+2026-01-27 11:53:05,910 - ERROR - 65.49.1.232 - - [27/Jan/2026 11:53:05] code 400, message Bad request version ('À\x14À')
+2026-01-27 11:53:05,913 - INFO - 65.49.1.232 - - [27/Jan/2026 11:53:05] "[35m[1m\x16\x03\x01\x00{\x01\x00\x00w\x03\x03¡ý6°k×\x92\x1fÔ\x02\x9b\x93\x85ÖÉçµO?i\x0fU_\x80ýûn\x8b,³jÌ\x00\x00\x1aÀ/À+À\x11À\x07À\x13À\x09À\x14À[0m" HTTPStatus.BAD_REQUEST -
+2026-01-27 12:08:26,173 - ERROR - 34.212.228.91 - - [27/Jan/2026 12:08:26] code 400, message Bad request version ("\x00>\x13\x02\x13\x03\x13\x01À,À0\x00\x9fÌ©Ì¨ÌªÀ+À/\x00\x9eÀ$À(\x00kÀ#À'\x00gÀ")
+2026-01-27 12:08:26,175 - INFO - 34.212.228.91 - - [27/Jan/2026 12:08:26] "[35m[1m\x16\x03\x01\x01&\x01\x00\x01"\x03\x03¯¬hÈb\x9bt\x8fû\x1e\x9eb°\\Ø\x97\x1b´\x1b\x814°GSÈEVGXNÜ( ç.G\x13+º3\x02°K ± =@7_¢2S\x88Æa\x95U×<ÙÄÙ\x97\x85\x00>\x13\x02\x13\x03\x13\x01À,À0\x00\x9fÌ©Ì¨ÌªÀ+À/\x00\x9eÀ$À(\x00kÀ#À'\x00gÀ[0m" HTTPStatus.BAD_REQUEST -
+2026-01-27 12:29:10,774 - WARNING - OnlyOffice callback JWT validation failed: Invalid token: Signature verification failed
+2026-01-27 12:29:10,775 - INFO - OnlyOffice callback: {'key': 'a5dc20074d9c3a887435', 'status': 4, 'actions': [{'type': 0, 'userid': 'admin'}], 'token': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJrZXkiOiJhNWRjMjAwNzRkOWMzYTg4NzQzNSIsInN0YXR1cyI6NCwiYWN0aW9ucyI6W3sidHlwZSI6MCwidXNlcmlkIjoiYWRtaW4ifV0sImlhdCI6MTc2OTQ4NDU1MCwiZXhwIjoxNzY5NDg0ODUwfQ.NAk3KLrv6kpYSna1nHILbnyxJQ9lYWP-qg8royh0GXY'}
+2026-01-27 12:29:10,780 - INFO - 192.168.10.77 - - [27/Jan/2026 12:29:10] "POST /api/onlyoffice/callback?type=source HTTP/1.1" 200 -
+2026-01-27 13:37:14,816 - INFO -  * Detected change in '/home/vlan24/ppt-backend/app.py', reloading
+2026-01-27 13:37:15,010 - INFO -  * Restarting with stat
+/home/vlan24/ppt-backend/app.py:2191: UserWarning: WOPI_JWT_SECRET not set! Using insecure default. Set WOPI_JWT_SECRET environment variable.
+  warnings.warn("WOPI_JWT_SECRET not set! Using insecure default. Set WOPI_JWT_SECRET environment variable.")
+2026-01-27 13:37:16,281 - WARNING -  * Debugger is active!
+2026-01-27 13:37:16,283 - INFO -  * Debugger PIN: 102-728-413
