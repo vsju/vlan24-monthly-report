@@ -1,0 +1,185 @@
+from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
+import os
+import datetime
+from dateutil.relativedelta import relativedelta
+import re
+import sys
+
+# ==============================================================================
+# 1. 기본 설정
+# ==============================================================================
+BASE_TEMPLATE_DIR = "/root/Report/template"
+BASE_IMAGE_DIR = "/root/Report"
+# 이미지만 삽입된 중간 파일을 저장할 폴더
+OUTPUT_DIR_WITH_IMAGES = "/root/Report/completed_with_images"
+
+# ==============================================================================
+# 2. 자동화 코드 본문
+# ==============================================================================
+
+def normalize_name(name):
+    """이름에서 모든 특수문자와 공백을 제거하여 비교 가능한 형태로 만듭니다."""
+    if not name:
+        return ""
+    return re.sub(r'[^a-zA-Z0-9]', '', name).lower()
+
+def get_target_shapes_from_template(prs):
+    """
+    프레젠테이션의 모든 슬라이드를 돌면서
+    (이름, 도형객체) 튜플 리스트로 수집.
+    그룹 도형 내부도 재귀적으로 탐색.
+    """
+    target_shapes = []
+
+    def collect_shapes(shapes):
+        for shape in shapes:
+            if shape.name:
+                target_shapes.append((shape.name, shape))
+            # 그룹 도형이면 내부 도형까지 탐색
+            if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
+                collect_shapes(shape.shapes)
+
+    for slide in prs.slides:
+        collect_shapes(slide.shapes)
+
+    return target_shapes
+
+def find_available_images(root_dir):
+    image_map = {}
+    if not os.path.isdir(root_dir):
+        return None
+    for dirpath, _, filenames in os.walk(root_dir):
+        for filename in filenames:
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                name_without_extension = os.path.splitext(filename)[0]
+                image_map[name_without_extension] = os.path.join(dirpath, filename)
+    return image_map
+
+def find_all_templates(template_base_dir):
+    template_paths = []
+    if not os.path.isdir(template_base_dir):
+        return template_paths
+    for dirpath, _, filenames in os.walk(template_base_dir):
+        for filename in filenames:
+            if filename.lower().endswith('.pptx'):
+                template_paths.append(os.path.join(dirpath, filename))
+    return template_paths
+
+def calculate_previous_month_dates():
+    today = datetime.date.today()
+    end_date = today.replace(day=1) - relativedelta(days=1)
+    start_date = end_date.replace(day=1)
+    start_date_str_kr = start_date.strftime("%Y년 %m월 %d일")
+    end_date_str_kr = end_date.strftime("%Y년 %m월 %d일")
+    start_date_str_hyphen = start_date.strftime("%Y-%m-%d")
+    end_date_str_hyphen = end_date.strftime("%Y-%m-%d")
+    return {
+        "placeholders": {
+            "{{START_DATE}}": start_date_str_kr,
+            "{{END_DATE}}": end_date_str_kr,
+            "{{MONTH}}": end_date.strftime("%m"),
+            "{{DATE_RANGE}}": f"{start_date_str_kr} ~ {end_date_str_kr}",
+            "{{DATE_RANGE_HYPHEN}}": f"{start_date_str_hyphen} ~ {end_date_str_hyphen}"
+        },
+        "filename_date": end_date.strftime("%Y-%m")
+    }
+
+def replace_text_in_presentation(prs, replacements):
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for p in shape.text_frame.paragraphs:
+                for r in p.runs:
+                    for placeholder, value in replacements.items():
+                        if placeholder in r.text:
+                            r.text = r.text.replace(placeholder, str(value))
+
+# --- 메인 실행 로직 ---
+if __name__ == "__main__":
+    print("--- 이미지 및 날짜 삽입 스크립트 시작 ---")
+    date_info = calculate_previous_month_dates()
+    date_replacements = date_info["placeholders"]
+    all_templates = find_all_templates(BASE_TEMPLATE_DIR)
+
+    if not all_templates:
+        print(f"Error: '{BASE_TEMPLATE_DIR}' 폴더에서 템플릿을 찾을 수 없습니다.")
+        sys.exit(1)
+
+    print(f"총 {len(all_templates)}개의 템플릿을 처리합니다.")
+    print("-" * 40)
+
+    for i, template_path in enumerate(all_templates):
+        print(f"작업 {i+1}/{len(all_templates)}: '{os.path.basename(template_path)}'...")
+
+        try:
+            prs = Presentation(template_path)
+
+            # 1. 날짜 먼저 삽입
+            replace_text_in_presentation(prs, date_replacements)
+
+            # 2. 이미지 삽입
+            relative_path = os.path.relpath(os.path.dirname(template_path), BASE_TEMPLATE_DIR)
+            image_search_dir = os.path.join(BASE_IMAGE_DIR, relative_path)
+            if not os.path.isdir(image_search_dir):
+                parent_dir = os.path.dirname(image_search_dir)
+                if os.path.isdir(parent_dir):
+                    image_search_dir = parent_dir
+
+            available_images = find_available_images(image_search_dir)
+            if available_images is None:
+                available_images = {}
+
+            # 이름 정규화 맵
+            normalized_image_map = {
+                normalize_name(k): k for k in available_images.keys()
+            }
+
+            target_shapes = get_target_shapes_from_template(prs)
+            insert_count = 0
+            skipped_shapes = []
+
+            for shape_name, shape_object in target_shapes:
+                normalized_shape_name = normalize_name(shape_name)
+
+                if normalized_shape_name in normalized_image_map:
+                    original_image_name = normalized_image_map[normalized_shape_name]
+                    image_path = available_images[original_image_name]
+
+                    left, top = shape_object.left, shape_object.top
+                    width, height = shape_object.width, shape_object.height
+
+                    slide = shape_object.part.slide  # group 도형도 여기서 슬라이드 나옴
+                    sp = shape_object._sp
+                    sp.getparent().remove(sp)
+
+                    slide.shapes.add_picture(image_path, left, top, width, height)
+                    insert_count += 1
+                else:
+                    # 이제는 이름 형태와 상관없이 전부 로그
+                    skipped_shapes.append(shape_name)
+
+            print(f"  > 총 {insert_count}개의 이미지를 삽입했습니다.")
+            if skipped_shapes:
+                print("\n  ⚠️  매칭에 실패한 도형 목록:")
+                for name in skipped_shapes:
+                    print(f"    - {name}")
+
+            # 3. 중간 결과 저장
+            output_subdir = os.path.join(OUTPUT_DIR_WITH_IMAGES, relative_path)
+            if not os.path.exists(output_subdir):
+                os.makedirs(output_subdir)
+
+            intermediate_output_path = os.path.join(
+                output_subdir,
+                os.path.basename(template_path)
+            )
+            prs.save(intermediate_output_path)
+            print(f"  > 중간 결과 저장 완료: {intermediate_output_path}")
+
+        except Exception as e:
+            print(f"  > 에러 발생: {e}")
+            continue
+
+    print("\n--- 모든 작업 완료 ---")

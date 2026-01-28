@@ -1,11 +1,11 @@
 import os
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPORT_BASE_DIR = "/root/Report"
 
-BASE_TEMPLATE_DIR = os.path.join(BASE_DIR, "Report", "template")
-BASE_IMAGE_DIR = os.path.join(BASE_DIR, "Report")
-OUTPUT_DIR_WITH_IMAGES = os.path.join(BASE_DIR, "Report", "completed_with_images")
-OUTPUT_DIR = os.path.join(BASE_DIR, "Report", "completed_final")
+BASE_TEMPLATE_DIR = os.path.join(REPORT_BASE_DIR, "template")
+BASE_IMAGE_DIR = REPORT_BASE_DIR
+OUTPUT_DIR_WITH_IMAGES = os.path.join(REPORT_BASE_DIR, "completed_with_images")
+OUTPUT_DIR = os.path.join(REPORT_BASE_DIR, "completed_final")
 
 GRAFANA_URL = os.getenv("GRAFANA_URL", "http://localhost:3000").rstrip('/')
 API_KEY = os.getenv("GRAFANA_API_KEY", "")

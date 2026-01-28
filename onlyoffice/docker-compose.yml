@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  onlyoffice:
+    image: onlyoffice/documentserver:latest
+    container_name: onlyoffice-docs
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=XSPalFKvv/MyVxXZoeR99IKDg4O0Mj8j3DIf7Omwt0A=
+      - JWT_IN_BODY=true
+      - WOPI_ENABLED=true
+      - ALLOW_PRIVATE_IP_ADDRESS=true
+      - USE_UNAUTHORIZED_STORAGE=true
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+      - onlyoffice_fonts:/usr/share/fonts/truetype/custom
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  onlyoffice_data:
+  onlyoffice_logs:
+  onlyoffice_fonts:
