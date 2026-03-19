@@ -17,6 +17,21 @@ if st.query_params.get('reset') == '1':
     st.rerun()
 
 
+def parse_sse_stream(response):
+    for line in response.iter_lines(decode_unicode=True):
+        if line and line.startswith("data: "):
+            try:
+                yield json.loads(line[6:])
+            except json.JSONDecodeError:
+                continue
+
+
+def safe_progress(current, total):
+    if total <= 0:
+        return 0.0
+    return min(0.99, current / total)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_customers_cached(api_url):
     """고객사 목록을 캐싱하여 반복 API 호출 방지"""
@@ -104,63 +119,440 @@ if not BACKEND_API_PUBLIC_URL or "localhost" in BACKEND_API_PUBLIC_URL:
         "(예: http://192.168.10.30:5001)"
     )
 
-st.title("📊 PowerPoint 자동화 도구")
-st.markdown("이미지와 Grafana 통계를 자동으로 PowerPoint에 삽입하는 도구입니다.")
+st.title("📊 VLAN24 월간보고서 생성기")
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🏠 홈",
     "🎨 이미지 렌더링",
     "🖼️ 이미지 삽입",
     "📈 통계 삽입",
-    "👥 고객사 관리",
-    "📄 템플릿 관리",
     "📥 다운로드",
+    "📄 템플릿 관리",
+    "📋 로그",
+    "👥 고객사 관리",
     "⚙️ 설정"
 ])
 
 with tab1:
-    st.header("📊 PowerPoint 자동화 도구")
-    
-    try:
-        response = requests.get(f"{API_URL}/health", timeout=5)
-        if response.ok:
-            data = response.json()
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.success("✅ 서버 연결됨")
-            with col2:
-                st.info(f"🌐 Grafana: {data.get('grafana_url', 'N/A')}")
-            with col3:
-                status = "✅ 설정됨" if data.get("grafana_configured") else "❌ 미설정"
-                st.info(f"🔑 API: {status}")
-        else:
-            st.error("❌ 백엔드 서버 연결 실패")
-    except Exception as e:
-        st.error(f"❌ 서버 연결 불가: {str(e)}")
-    
     st.divider()
     
-    st.subheader("📋 작업 순서 가이드")
-    st.markdown("""
-    보고서 생성은 아래 순서로 진행합니다:
-    
-    | 순서 | 탭 | 작업 내용 |
-    |:---:|:---|:---|
-    | 1️⃣ | **이미지 렌더링** | Grafana 대시보드 패널을 PNG 이미지로 저장 |
-    | 2️⃣ | **이미지 삽입** | 템플릿에 이미지 삽입 → 이미지삽입 템플릿 생성 |
-    | 3️⃣ | **통계 삽입** | Grafana 통계 데이터 삽입 → 최종 보고서 완성 |
-    | 4️⃣ | **다운로드** | 완성된 보고서 다운로드 |
-    """)
-    
+    home_guide_col, home_batch_col = st.columns(2)
+
+    with home_guide_col:
+        st.subheader("📋 작업 순서 가이드")
+        st.markdown("""
+        보고서 생성은 아래 순서로 진행합니다:
+
+        | 순서 | 탭 | 작업 내용 |
+        |:---:|:---|:---|
+        | 1️⃣ | **이미지 렌더링** | 매월 1일 00:30 자동 실행 — 별도 작업 불필요 |
+        | 2️⃣ | **이미지 삽입** | ⭐ 실제 작업 시작점 — 템플릿에 이미지 삽입 → 이미지삽입 템플릿 생성 |
+        | 3️⃣ | **통계 삽입** | Grafana 통계 데이터 삽입 → 최종 보고서 완성 |
+        | 4️⃣ | **로그** | 작업 이력 확인 및 오류 추적 |
+        | 5️⃣ | **다운로드** | 완성된 보고서 다운로드 |
+        """)
+
+    with home_batch_col:
+        st.subheader("⚡ 일괄 실행")
+
+        batch_customers = ["전체"] + [c['name'] for c in fetch_customers_cached(API_URL)]
+        if 'batch_customer_select' in st.session_state:
+            if st.session_state['batch_customer_select'] not in batch_customers:
+                del st.session_state['batch_customer_select']
+        batch_customer = st.selectbox("고객사 선택", batch_customers, key="batch_customer_select")
+
+        batch_render   = st.checkbox("🎨 이미지 렌더링", value=False, key="batch_cb_render")
+        batch_insert   = st.checkbox("🖼️ 이미지 삽입",  value=True,  key="batch_cb_insert")
+        batch_stats    = st.checkbox("📈 통계 삽입",    value=True,  key="batch_cb_stats")
+        batch_download = st.checkbox("📥 다운로드 (최종 보고서)", value=True, key="batch_cb_download")
+
+        any_checked = batch_render or batch_insert or batch_stats or batch_download
+        run_batch = st.button("🚀 일괄 실행", type="primary", use_container_width=True,
+                              disabled=not any_checked, key="batch_run_btn")
+
+        if run_batch:
+            batch_cust_param = batch_customer if batch_customer != "전체" else None
+            batch_status = st.empty()
+            batch_progress = st.progress(0)
+            batch_detail = st.empty()
+            batch_log_area = st.empty()
+            st.session_state['batch_step_results'] = []
+            total_steps = sum([batch_render, batch_insert, batch_stats, batch_download])
+            done_steps = [0]
+            batch_completed_logs = []
+            batch_current_header = [""]
+            batch_current_msgs = []
+            rend_failed_panels = []
+            rend_single_failed_panels = []
+
+            def _upd_progress(label):
+                pct = int(done_steps[0] / total_steps * 100) if total_steps else 0
+                batch_progress.progress(pct, text=label)
+
+            def _batch_log():
+                lines = list(batch_completed_logs[-5:])
+                if batch_completed_logs:
+                    lines.append("─" * 40)
+                if batch_current_header[0]:
+                    lines.append(batch_current_header[0])
+                lines.extend(batch_current_msgs[-15:])
+                if lines:
+                    batch_log_area.code("\n".join(lines), language=None)
+
+            def _batch_log_reset():
+                batch_completed_logs.clear()
+                batch_current_header[0] = ""
+                batch_current_msgs.clear()
+                batch_log_area.empty()
+
+            try:
+                cleanup_payload = {}
+                if batch_cust_param:
+                    cleanup_payload["customer"] = batch_cust_param
+                cl_resp = requests.post(
+                    f"{API_URL}/api/cleanup/old-reports",
+                    json=cleanup_payload, timeout=30
+                )
+                if cl_resp.ok:
+                    cl_data = cl_resp.json()
+                    if cl_data.get("deleted", 0) > 0:
+                        batch_status.info(f"🗑️ 이전 달 보고서 {cl_data['deleted']}개 자동 삭제됨")
+            except Exception:
+                pass
+
+            if batch_render:
+                batch_status.info("🎨 이미지 렌더링 중...")
+                _batch_log_reset()
+                try:
+                    if batch_cust_param:
+                        rend_resp = requests.post(
+                            f"{API_URL}/api/render/all/stream",
+                            json={"customer_name": batch_cust_param},
+                            stream=True, timeout=(10, 1800)
+                        )
+                    else:
+                        rend_resp = requests.post(
+                            f"{API_URL}/api/render/all-customers/stream",
+                            stream=True, timeout=(10, 1800)
+                        )
+                    if rend_resp.status_code == 200:
+                        _rend_final = [None]
+                        _rend_err = [""]
+                        for ev in parse_sse_stream(rend_resp):
+                            etype = ev.get("type")
+                            if etype == "init":
+                                tc = ev.get("total_customers", ev.get("total", 0))
+                                unit = "패널" if batch_cust_param else "고객사"
+                                batch_status.info(f"🎨 이미지 렌더링 시작: {tc}개 {unit}")
+                            elif etype == "customer_start":
+                                ci = ev.get("customer_index", 0)
+                                tc = ev.get("total_customers", 1)
+                                cname = ev.get("customer", "")
+                                rend_failed_panels.clear()
+                                batch_detail.caption(f"[{ci}/{tc}] {cname} 렌더링 시작...")
+                                batch_current_header[0] = f"📂 [{ci}/{tc}] {cname}"
+                                batch_current_msgs.clear()
+                                _batch_log()
+                            elif etype == "customer_progress":
+                                ci = ev.get("customer_index", 0)
+                                tc = ev.get("total_customers", 1)
+                                cname = ev.get("customer", "")
+                                cur = ev.get("panel_current", 0)
+                                tot = ev.get("panel_total", 0)
+                                panel = ev.get("panel", "")
+                                batch_detail.caption(f"[{ci}/{tc}] {cname} - 패널 {cur}/{tot}: {panel}")
+                                if panel:
+                                    batch_current_msgs.append(f"  패널 렌더링: {panel}")
+                                    _batch_log()
+                            elif etype == "customer_done":
+                                ci = ev.get("customer_index", 0)
+                                tc = ev.get("total_customers", 1)
+                                cname = ev.get("customer", "")
+                                rendered = ev.get("rendered", 0)
+                                failed = ev.get("failed", 0)
+                                if failed == 0:
+                                    batch_completed_logs.append(f"✅ [{ci}/{tc}] {cname} — {rendered}개 패널 완료")
+                                else:
+                                    fail_detail = f" (실패 패널: {', '.join(rend_failed_panels)})" if rend_failed_panels else ""
+                                    batch_completed_logs.append(f"⚠️ [{ci}/{tc}] {cname} — {rendered}개 성공, {failed}개 실패{fail_detail}")
+                                rend_failed_panels.clear()
+                                batch_current_msgs.clear()
+                                _batch_log()
+                            elif etype == "progress":
+                                cur = ev.get("current", 0)
+                                tot = ev.get("total", 0)
+                                panel = ev.get("panel_name", ev.get("panel", ""))
+                                batch_detail.caption(f"패널 {cur}/{tot}: {panel}")
+                                if panel:
+                                    batch_current_msgs.append(f"  패널 렌더링: {panel}")
+                                    _batch_log()
+                            elif etype == "panel_done":
+                                panel = ev.get("panel_name", ev.get("panel", ""))
+                                p_ok = ev.get("success", True)
+                                if panel:
+                                    mark = "✅" if p_ok else "❌"
+                                    batch_current_msgs.append(f"  {mark} {panel}")
+                                    _batch_log()
+                                if not p_ok and panel:
+                                    rend_failed_panels.append(panel)
+                                    rend_single_failed_panels.append(panel)
+                            elif etype == "complete":
+                                _rend_final[0] = ev
+                            elif etype == "error":
+                                _rend_err[0] = ev.get("error", "알 수 없는 오류")
+                        if _rend_err[0]:
+                            label = f"❌ 이미지 렌더링 오류: {_rend_err[0]}"
+                        elif _rend_final[0] is not None:
+                            rf = _rend_final[0]
+                            total_failed = rf.get("total_failed", rf.get("failed", 0))
+                            total_rendered = rf.get("total_rendered", rf.get("rendered", 0))
+                            if total_failed > 0:
+                                fail_detail = f" (실패 패널: {', '.join(rend_single_failed_panels)})" if rend_single_failed_panels else ""
+                                label = f"⚠️ 이미지 렌더링 부분 완료 ({total_rendered}개 성공, {total_failed}개 실패{fail_detail})"
+                            else:
+                                label = f"✅ 이미지 렌더링 완료 ({total_rendered}개 패널)"
+                        else:
+                            label = "✅ 이미지 렌더링 완료"
+                        st.session_state['batch_step_results'].append(label)
+                        done_steps[0] += 1
+                        _upd_progress(label)
+                    else:
+                        st.session_state['batch_step_results'].append(f"❌ 이미지 렌더링 실패 (코드 {rend_resp.status_code})")
+                        done_steps[0] += 1
+                        _upd_progress("❌ 이미지 렌더링 실패")
+                except Exception as e:
+                    st.session_state['batch_step_results'].append(f"❌ 이미지 렌더링 오류: {str(e)}")
+                    done_steps[0] += 1
+                    _upd_progress("❌ 이미지 렌더링 오류")
+
+            if batch_insert:
+                batch_status.info("🖼️ 이미지 삽입 중...")
+                _batch_log_reset()
+                try:
+                    ins_resp = requests.post(
+                        f"{API_URL}/api/process/images/stream",
+                        json={"customer_name": batch_cust_param},
+                        stream=True, timeout=(10, 1800)
+                    )
+                    if ins_resp.status_code == 200:
+                        _ins_final = [None]
+                        _ins_err = [""]
+                        for ev in parse_sse_stream(ins_resp):
+                            etype = ev.get("type")
+                            if etype == "init":
+                                tf = ev.get("total_files", 0)
+                                cust = ev.get("customer", "전체")
+                                batch_status.info(f"🖼️ 이미지 삽입 시작: {cust} - {tf}개 파일")
+                            elif etype == "file_start":
+                                fi = ev.get("file_index", 0)
+                                tf = ev.get("total_files", 1)
+                                fn = ev.get("filename", "")
+                                fc = ev.get("customer", "")
+                                batch_detail.caption(f"[{fi}/{tf}] {fc} > {fn}")
+                                batch_current_header[0] = f"📂 [파일 {fi}/{tf}] {fc} > {fn}"
+                                batch_current_msgs.clear()
+                                _batch_log()
+                            elif etype == "file_progress":
+                                msg = ev.get("message", "")
+                                if msg:
+                                    batch_current_msgs.append(f"  {msg}")
+                                    _batch_log()
+                            elif etype == "file_done":
+                                fi = ev.get("file_index", 0)
+                                tf = ev.get("total_files", 1)
+                                fn = ev.get("filename", "")
+                                fc = ev.get("customer", "")
+                                if ev.get("success"):
+                                    ins = ev.get("images_inserted", 0)
+                                    skp = ev.get("skipped", 0)
+                                    batch_completed_logs.append(f"✅ [{fi}/{tf}] {fc} > {fn} — {ins}개 삽입, {skp}개 스킵")
+                                else:
+                                    batch_completed_logs.append(f"❌ [{fi}/{tf}] {fc} > {fn} — {ev.get('error', '')}")
+                                batch_current_msgs.clear()
+                                _batch_log()
+                            elif etype == "complete":
+                                _ins_final[0] = ev
+                            elif etype == "error":
+                                _ins_err[0] = ev.get("error", "알 수 없는 오류")
+                        if _ins_err[0]:
+                            label = f"❌ 이미지 삽입 오류: {_ins_err[0]}"
+                        elif _ins_final[0] is not None:
+                            ins_f = _ins_final[0]
+                            pc = ins_f.get("processed_count", 0)
+                            ec = ins_f.get("error_count", 0)
+                            ti = ins_f.get("total_images_inserted", 0)
+                            if ec > 0:
+                                label = f"⚠️ 이미지 삽입 부분 완료 ({pc}개 성공, {ec}개 실패, 총 {ti}개 삽입)"
+                            else:
+                                label = f"✅ 이미지 삽입 완료 ({pc}개 파일, 총 {ti}개 삽입)"
+                        else:
+                            label = "✅ 이미지 삽입 완료"
+                        st.session_state['batch_step_results'].append(label)
+                        done_steps[0] += 1
+                        _upd_progress(label)
+                    else:
+                        st.session_state['batch_step_results'].append(f"❌ 이미지 삽입 실패 (코드 {ins_resp.status_code})")
+                        done_steps[0] += 1
+                        _upd_progress("❌ 이미지 삽입 실패")
+                except Exception as e:
+                    st.session_state['batch_step_results'].append(f"❌ 이미지 삽입 오류: {str(e)}")
+                    done_steps[0] += 1
+                    _upd_progress("❌ 이미지 삽입 오류")
+
+            if batch_stats:
+                batch_status.info("📈 통계 삽입 중...")
+                _batch_log_reset()
+                try:
+                    stat_resp = requests.post(
+                        f"{API_URL}/api/process/statistics/stream",
+                        json={"customer_name": batch_cust_param},
+                        stream=True, timeout=(10, 3600)
+                    )
+                    if stat_resp.status_code == 200:
+                        _stat_fi = [0]
+                        _stat_tf = [1]
+                        _stat_fn = [""]
+                        _stat_fc = [""]
+                        _stat_final = [None]
+                        _stat_error = [""]
+                        for ev in parse_sse_stream(stat_resp):
+                            etype = ev.get("type")
+                            if etype == "init":
+                                tf = ev.get("total_files", 0)
+                                cust = ev.get("customer", "전체")
+                                batch_status.info(f"📈 통계 삽입 시작: {cust} - {tf}개 파일")
+                            elif etype == "file_start":
+                                _stat_fi[0] = ev.get("file_index", 0)
+                                _stat_tf[0] = ev.get("total_files", 1)
+                                _stat_fn[0] = ev.get("filename", "")
+                                _stat_fc[0] = ev.get("customer", "")
+                                batch_detail.caption(f"[{_stat_fi[0]}/{_stat_tf[0]}] {_stat_fc[0]} > {_stat_fn[0]}")
+                                batch_current_header[0] = f"📊 [파일 {_stat_fi[0]}/{_stat_tf[0]}] {_stat_fc[0]} > {_stat_fn[0]}"
+                                batch_current_msgs.clear()
+                                _batch_log()
+                            elif etype == "file_progress":
+                                msg = ev.get("message", "")
+                                ph_c = ev.get("placeholder_current", 0)
+                                ph_t = ev.get("placeholder_total", 0)
+                                if msg:
+                                    ph_info = f" ({ph_c}/{ph_t})" if ph_t > 0 else ""
+                                    batch_current_msgs.append(f"  {msg}{ph_info}")
+                                    _batch_log()
+                            elif etype == "file_done":
+                                fi = ev.get("file_index", _stat_fi[0])
+                                tf = ev.get("total_files", _stat_tf[0])
+                                fn = ev.get("filename", _stat_fn[0])
+                                fc = ev.get("customer", _stat_fc[0])
+                                if ev.get("success"):
+                                    gq = ev.get("grafana_queries", 0)
+                                    fp = ev.get("failed_placeholders", 0)
+                                    batch_completed_logs.append(f"✅ [{fi}/{tf}] {fc} > {fn} — {gq}개 통계, {fp}개 실패")
+                                else:
+                                    batch_completed_logs.append(f"❌ [{fi}/{tf}] {fc} > {fn} — {ev.get('error', '')}")
+                                batch_current_msgs.clear()
+                                _batch_log()
+                            elif etype == "complete":
+                                _stat_final[0] = ev
+                            elif etype == "error":
+                                _stat_error[0] = ev.get("error", "알 수 없는 오류")
+                        if _stat_error[0]:
+                            label = f"❌ 통계 삽입 오류: {_stat_error[0]}"
+                        elif _stat_final[0] is not None:
+                            sf = _stat_final[0]
+                            pc = sf.get("processed_count", 0)
+                            ec = sf.get("error_count", 0)
+                            tg = sf.get("total_grafana_queries", 0)
+                            fpc = sf.get("failed_placeholder_count", 0)
+                            if ec > 0 or fpc > 0:
+                                label = f"⚠️ 통계 삽입 부분 완료 ({pc}개 성공, {ec}개 실패, 플레이스홀더 {fpc}개 실패)"
+                            else:
+                                label = f"✅ 통계 삽입 완료 ({pc}개 파일, 총 {tg}개 통계 삽입)"
+                        else:
+                            label = "✅ 통계 삽입 완료"
+                        st.session_state['batch_step_results'].append(label)
+                        done_steps[0] += 1
+                        _upd_progress(label)
+                    else:
+                        st.session_state['batch_step_results'].append(f"❌ 통계 삽입 실패 (코드 {stat_resp.status_code})")
+                        done_steps[0] += 1
+                        _upd_progress("❌ 통계 삽입 실패")
+                except Exception as e:
+                    st.session_state['batch_step_results'].append(f"❌ 통계 삽입 오류: {str(e)}")
+                    done_steps[0] += 1
+                    _upd_progress("❌ 통계 삽입 오류")
+
+            if batch_download:
+                batch_status.info("📥 다운로드 파일 준비 중...")
+                batch_log_area.empty()
+                try:
+                    dl_params = {"type": "final"}
+                    if batch_cust_param:
+                        dl_params["customer"] = batch_cust_param
+                    dl_resp = requests.get(
+                        f"{API_URL}/api/download/templates",
+                        params=dl_params, timeout=60
+                    )
+                    if dl_resp.ok:
+                        st.session_state['batch_dl_content'] = dl_resp.content
+                        st.session_state['batch_dl_filename'] = f"{'all' if not batch_cust_param else batch_cust_param}_final_templates.zip"
+                        st.session_state['batch_step_results'].append("✅ 다운로드 준비 완료")
+                        done_steps[0] += 1
+                        _upd_progress("✅ 다운로드 준비 완료")
+                    else:
+                        st.session_state['batch_step_results'].append("❌ 다운로드 준비 실패")
+                        done_steps[0] += 1
+                        _upd_progress("❌ 다운로드 준비 실패")
+                except Exception as e:
+                    st.session_state['batch_step_results'].append(f"❌ 다운로드 오류: {str(e)}")
+                    done_steps[0] += 1
+                    _upd_progress("❌ 다운로드 오류")
+
+            batch_detail.empty()
+            batch_log_area.empty()
+            _results = st.session_state.get('batch_step_results', [])
+            has_error   = any("❌" in r for r in _results)
+            has_warning = any("⚠️" in r for r in _results)
+            if has_error:
+                batch_progress.progress(100, text="일부 단계 실패")
+                batch_status.error("❌ 일부 단계 실패 — 아래 결과를 확인하세요")
+            elif has_warning:
+                batch_progress.progress(100, text="일부 단계 부분 완료")
+                batch_status.warning("⚠️ 일부 단계 부분 완료 — 아래 결과를 확인하세요")
+            else:
+                batch_progress.progress(100, text="일괄 실행 완료")
+                batch_status.success("✅ 일괄 실행 완료")
+
+        if st.session_state.get('batch_step_results'):
+            for r in st.session_state['batch_step_results']:
+                st.write(r)
+
+        if st.session_state.get('batch_dl_content'):
+            _dl_col, _cl_col = st.columns([3, 1])
+            with _dl_col:
+                st.download_button(
+                    label="💾 최종 보고서 ZIP 저장",
+                    data=st.session_state['batch_dl_content'],
+                    file_name=st.session_state.get('batch_dl_filename', 'final_templates.zip'),
+                    mime="application/zip",
+                    key="batch_dl_btn"
+                )
+            with _cl_col:
+                if st.button("🗑️ 초기화", key="batch_clear_btn", use_container_width=True):
+                    st.session_state.pop('batch_dl_content', None)
+                    st.session_state.pop('batch_dl_filename', None)
+                    st.session_state.pop('batch_step_results', None)
+                    st.rerun()
+
     st.divider()
     
     st.subheader("📖 각 탭 사용 설명서")
     
     with st.expander("🎨 이미지 렌더링", expanded=False):
+        st.info("🕐 매월 1일 00:30에 자동으로 실행됩니다. 통상적으로 이미지 삽입 탭부터 시작하시면 됩니다.")
         st.markdown("""
         **목적:** Grafana 대시보드의 패널들을 PNG 이미지로 렌더링하여 고객사 폴더에 저장
         
-        **사용 방법:**
+        **사용 방법 (수동 재렌더링 시):**
         1. 고객사 선택
         2. 대시보드 UID 확인 (고객사 관리에서 설정)
         3. 렌더링할 패널 선택 또는 전체 선택
@@ -213,13 +605,25 @@ with tab1:
         **목적:** PowerPoint 템플릿 조회, 편집, 생성 관리
         
         **주요 기능:**
-        - **템플릿 조회:** 원본/이미지삽입/통계삽입 템플릿 목록
-        - **슬라이드 정보:** 각 슬라이드의 도형, 플레이스홀더 확인
+        - **편집기:** 온라인에서 직접 템플릿 편집 (PPT 에디터)
+        - **자동 생성:** 고객사 환경에 맞는 템플릿 자동 생성 — 두 가지 방식 선택 가능
+          - 🖼️ **렌더링 이미지 파일 있음**: 마스터 템플릿 + 이미지 폴더 분석 → VM별 슬라이드 생성
+          - 📡 **렌더링 이미지 파일 없음 (대시보드 기반)**: Grafana 대시보드 UID → Row/Panel 구조 분석 → 슬라이드 자동 구성 (이미지 없이 사용 가능)
+        - **VM 추가:** 기존 템플릿에 VM 슬라이드 추가
+        - **업로드:** 외부에서 제작한 템플릿 파일 업로드
         - **Shape 편집:** 도형 이름 변경으로 이미지 매핑 설정
-        - **VM 슬라이드 복제:** 패턴 슬라이드 복제 및 템플릿 생성
-        - **PPT 에디터:** 온라인에서 직접 템플릿 편집
         """)
-    
+
+    with st.expander("📋 로그", expanded=False):
+        st.markdown("""
+        **목적:** 이미지 삽입·통계 삽입 등 작업 이력 조회 및 오류 추적
+        
+        **주요 기능:**
+        - **이력 조회:** 작업 유형(이미지 삽입/통계 삽입) 및 상태(성공/실패)별 필터링
+        - **상세 보기:** 각 작업 항목 클릭 시 플레이스홀더별 처리 결과 상세 확인
+        - **로그 삭제:** 불필요한 이력 개별 또는 전체 삭제
+        """)
+
     with st.expander("📥 다운로드", expanded=False):
         st.markdown("""
         **목적:** 생성된 보고서 및 템플릿 파일 다운로드
@@ -247,7 +651,7 @@ with tab2:
     if 'render_mode' not in st.session_state:
         st.session_state['render_mode'] = 'all'
     
-    render_col1, render_col2 = st.columns(2)
+    render_col1, render_col2, render_col3 = st.columns(3)
     with render_col1:
         if st.button("🚀 전체 렌더링", use_container_width=True, type="primary" if st.session_state.get('render_mode') == 'all' else "secondary"):
             st.session_state['render_mode'] = 'all'
@@ -256,6 +660,10 @@ with tab2:
         if st.button("🎯 개별 렌더링", use_container_width=True, type="primary" if st.session_state.get('render_mode') == 'individual' else "secondary"):
             st.session_state['render_mode'] = 'individual'
             st.rerun()
+    with render_col3:
+        if st.button("📥 이미지 다운로드", use_container_width=True, type="primary" if st.session_state.get('render_mode') == 'download' else "secondary"):
+            st.session_state['render_mode'] = 'download'
+            st.rerun()
     
     st.divider()
     
@@ -263,36 +671,109 @@ with tab2:
         st.subheader("🚀 전체 고객사 렌더링")
         st.markdown("모든 고객사의 대시보드 패널을 한 번에 렌더링합니다.")
         if st.button("▶️ 전체 고객사 렌더링 실행", type="primary"):
-            with st.spinner("모든 고객사 패널 렌더링 중... (시간이 오래 걸릴 수 있습니다)"):
-                try:
-                    resp = requests.post(
-                        f"{API_URL}/api/render/all-customers",
-                        timeout=600
-                    )
-                    if resp.ok:
-                        result = resp.json()
-                        if result.get('success'):
-                            st.success(f"전체 렌더링 완료: {len(result.get('customers_rendered', []))}개 고객사, 총 {result.get('total_panels_rendered', 0)}개 패널")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            detail_text = st.empty()
+            log_container = st.container()
+
+            try:
+                resp = requests.post(
+                    f"{API_URL}/api/render/all-customers/stream",
+                    stream=True, timeout=(10, 1800)
+                )
+                if resp.status_code != 200:
+                    st.error(f"렌더링 실패: 서버 응답 코드 {resp.status_code}")
+                else:
+                    final_event = None
+                    for event in parse_sse_stream(resp):
+                        etype = event.get("type")
+                        if etype == "init":
+                            total_c = event.get("total_customers", 0)
+                            status_text.info(f"🚀 전체 렌더링 시작: {total_c}개 고객사")
+                        elif etype == "customer_start":
+                            ci = event.get("customer_index", 0)
+                            tc = event.get("total_customers", 1)
+                            cname = event.get("customer", "")
+                            progress_bar.progress(max(0.01, safe_progress(ci - 1, tc)), text=f"고객사 {ci}/{tc}: {cname}")
+                            status_text.info(f"📂 [{ci}/{tc}] {cname} 렌더링 시작...")
+                        elif etype == "customer_progress":
+                            ci = event.get("customer_index", 0)
+                            tc = event.get("total_customers", 1)
+                            pc = event.get("panel_current", 0)
+                            pt = event.get("panel_total", 1)
+                            cname = event.get("customer", "")
+                            panel = event.get("panel", "")
+                            base_progress = safe_progress(ci - 1, tc)
+                            panel_progress = (pc / pt) / tc if pt > 0 and tc > 0 else 0
+                            progress_bar.progress(min(0.99, base_progress + panel_progress),
+                                                  text=f"고객사 {ci}/{tc}: {cname} - 패널 {pc}/{pt}")
+                            detail_text.caption(f"🎨 렌더링 중: {panel}")
+                        elif etype == "customer_done":
+                            ci = event.get("customer_index", 0)
+                            tc = event.get("total_customers", 1)
+                            cname = event.get("customer", "")
+                            if event.get("success"):
+                                r = event.get("rendered", 0)
+                                f = event.get("failed", 0)
+                                detail_text.caption(f"✅ {cname}: {r}개 성공, {f}개 실패")
+                            else:
+                                detail_text.caption(f"❌ {cname}: {event.get('error', '')}")
+                        elif etype == "complete":
+                            final_event = event
+                            progress_bar.progress(1.0, text="완료!")
+                        elif etype == "error":
+                            st.error(event.get("error", "알 수 없는 오류"))
+
+                    if final_event:
+                        detail_text.empty()
+                        tr = final_event.get("total_rendered", 0)
+                        tf = final_event.get("total_failed", 0)
+                        cr = final_event.get("customers_rendered", [])
+                        cf = final_event.get("customers_failed", [])
+                        if final_event.get("success"):
+                            status_text.success(f"전체 렌더링 완료: {len(cr)}개 고객사, 총 {tr}개 패널 성공")
                         else:
-                            st.warning(f"부분 완료: {len(result.get('customers_rendered', []))}개 성공, {len(result.get('customers_failed', []))}개 실패")
-                        
-                        if result.get('customers_rendered'):
-                            with st.expander("성공한 고객사"):
-                                for c in result.get('customers_rendered', []):
+                            status_text.warning(f"부분 완료: {len(cr)}개 성공, {len(cf)}개 실패 | 패널 {tr}개 성공, {tf}개 실패")
+
+                        if cr and tr > 0:
+                            log_container.markdown("**📥 렌더링 결과 다운로드**")
+                            dl_cols = log_container.columns(min(len(cr), 4))
+                            for i, c in enumerate(cr):
+                                cname = c['name']
+                                c_files = c.get('rendered_files', [])
+                                if not c_files:
+                                    continue
+                                with dl_cols[i % min(len(cr), 4)]:
+                                    try:
+                                        dl_resp = requests.post(
+                                            f"{API_URL}/api/render/download-files",
+                                            json={"files": c_files, "customer_name": cname},
+                                            timeout=120
+                                        )
+                                        if dl_resp.ok:
+                                            st.download_button(
+                                                f"📥 {cname}",
+                                                data=dl_resp.content,
+                                                file_name=f"{cname}_rendered.zip",
+                                                mime="application/zip",
+                                                key=f"dl_all_cust_{cname}"
+                                            )
+                                        else:
+                                            st.caption(f"{cname}: 다운로드 불가")
+                                    except Exception:
+                                        st.caption(f"{cname}: 다운로드 오류")
+
+                        if cr:
+                            with log_container.expander("성공한 고객사"):
+                                for c in cr:
                                     st.text(f"{c['name']}: {c['rendered_count']}개 성공, {c['failed_count']}개 실패")
-                        
-                        if result.get('customers_failed'):
-                            with st.expander("실패한 고객사"):
-                                for c in result.get('customers_failed', []):
-                                    st.text(f"{c['name']}: {c['error']}")
-                        
-                        with st.expander("상세 로그"):
-                            for log in result.get('logs', []):
-                                st.text(log)
-                    else:
-                        st.error(f"렌더링 실패: {resp.json().get('error', 'Unknown error')}")
-                except Exception as e:
-                    st.error(f"오류: {str(e)}")
+                        if cf:
+                            with log_container.expander("실패한 고객사"):
+                                for c in cf:
+                                    st.text(f"{c['name']}: {c.get('error', '')}")
+
+            except Exception as e:
+                st.error(f"오류: {str(e)}")
     
     elif st.session_state.get('render_mode') == 'individual':
         st.subheader("🎯 개별 고객사 렌더링")
@@ -324,28 +805,78 @@ with tab2:
                             st.session_state['render_panels_loaded'] = True
                     with col2:
                         if st.button("🎨 전체 렌더링", type="secondary"):
-                            with st.spinner("전체 패널 렌더링 중..."):
-                                try:
-                                    resp = requests.post(
-                                        f"{API_URL}/api/render/all",
-                                        json={"customer_name": render_customer},
-                                        timeout=300
-                                    )
-                                    if resp.ok:
-                                        result = resp.json()
-                                        if result.get('success'):
-                                            st.success(f"렌더링 완료: {len(result.get('rendered', []))}개 성공")
-                                            st.info(f"저장 위치: `{result.get('save_dir', '')}`")
+                            render_progress = st.progress(0)
+                            render_status = st.empty()
+                            render_detail = st.empty()
+                            render_log = st.container()
+
+                            try:
+                                resp = requests.post(
+                                    f"{API_URL}/api/render/all/stream",
+                                    json={"customer_name": render_customer},
+                                    stream=True, timeout=(10, 1800)
+                                )
+                                if resp.status_code != 200:
+                                    st.error(f"렌더링 실패: 서버 응답 코드 {resp.status_code}")
+                                else:
+                                    final_event = None
+                                    for event in parse_sse_stream(resp):
+                                        etype = event.get("type")
+                                        if etype == "init":
+                                            total_p = event.get("total", 0)
+                                            render_status.info(f"🎨 {render_customer} 렌더링 시작: {total_p}개 패널")
+                                        elif etype == "progress":
+                                            cur = event.get("current", 0)
+                                            tot = event.get("total", 1)
+                                            panel = event.get("panel", "")
+                                            row = event.get("row", "")
+                                            render_progress.progress(safe_progress(cur, tot),
+                                                                     text=f"패널 {cur}/{tot}")
+                                            render_detail.caption(f"🎨 렌더링 중: [{row}] {panel}")
+                                        elif etype == "panel_done":
+                                            r = event.get("rendered", 0)
+                                            f = event.get("failed", 0)
+                                            panel = event.get("panel", "")
+                                            icon = "✅" if event.get("success") else "❌"
+                                            render_status.info(f"진행: 성공 {r}개 / 실패 {f}개")
+                                            render_detail.caption(f"{icon} {panel}")
+                                        elif etype == "complete":
+                                            final_event = event
+                                            render_progress.progress(1.0, text="완료!")
+                                        elif etype == "error":
+                                            st.error(event.get("error", "알 수 없는 오류"))
+
+                                    if final_event:
+                                        render_detail.empty()
+                                        r = final_event.get("rendered", 0)
+                                        f = final_event.get("failed", 0)
+                                        r_files = final_event.get("rendered_files", [])
+                                        if final_event.get("success"):
+                                            render_status.success(f"렌더링 완료: {r}개 성공")
                                         else:
-                                            st.warning(f"부분 실패: {len(result.get('rendered', []))}개 성공, {len(result.get('failed', []))}개 실패")
-                                        
-                                        with st.expander("상세 로그"):
-                                            for log in result.get('logs', []):
-                                                st.text(log)
-                                    else:
-                                        st.error(f"렌더링 실패: {resp.json().get('error', 'Unknown error')}")
-                                except Exception as e:
-                                    st.error(f"오류: {str(e)}")
+                                            render_status.warning(f"부분 실패: {r}개 성공, {f}개 실패")
+                                        if final_event.get("save_dir"):
+                                            render_log.info(f"저장 위치: `{final_event['save_dir']}`")
+                                        if r > 0 and r_files:
+                                            try:
+                                                dl_resp = requests.post(
+                                                    f"{API_URL}/api/render/download-files",
+                                                    json={"files": r_files, "customer_name": render_customer},
+                                                    timeout=120
+                                                )
+                                                if dl_resp.ok:
+                                                    render_log.download_button(
+                                                        f"📥 {render_customer} 렌더링 이미지 다운로드",
+                                                        data=dl_resp.content,
+                                                        file_name=f"{render_customer}_rendered.zip",
+                                                        mime="application/zip",
+                                                        key="dl_individual_all"
+                                                    )
+                                            except Exception:
+                                                render_log.caption("다운로드 준비 중 오류 발생")
+
+                            except Exception as e:
+                                st.error(f"오류: {str(e)}")
                     
                     if st.session_state.get('render_panels_loaded'):
                         try:
@@ -408,36 +939,81 @@ with tab2:
                                     
                                     if selected_count > 0:
                                         if st.button(f"🎨 선택한 {selected_count}개 패널 렌더링", type="primary"):
-                                            with st.spinner("선택한 패널 렌더링 중..."):
-                                                try:
-                                                    resp = requests.post(
-                                                        f"{API_URL}/api/render/selected",
-                                                        json={
-                                                            "customer_name": render_customer,
-                                                            "panel_ids": list(st.session_state['selected_panels'])
-                                                        },
-                                                        timeout=300
-                                                    )
-                                                    if resp.ok:
-                                                        result = resp.json()
-                                                        if result.get('success'):
-                                                            st.success(f"렌더링 완료: {len(result.get('rendered', []))}개 성공")
-                                                            st.info(f"저장 위치: `{result.get('save_dir', '')}`")
+                                            sel_progress = st.progress(0)
+                                            sel_status = st.empty()
+                                            sel_detail = st.empty()
+                                            sel_log = st.container()
+
+                                            try:
+                                                resp = requests.post(
+                                                    f"{API_URL}/api/render/selected/stream",
+                                                    json={
+                                                        "customer_name": render_customer,
+                                                        "panel_ids": list(st.session_state['selected_panels'])
+                                                    },
+                                                    stream=True, timeout=(10, 1800)
+                                                )
+                                                if resp.status_code != 200:
+                                                    st.error(f"렌더링 실패: 서버 응답 코드 {resp.status_code}")
+                                                else:
+                                                    final_event = None
+                                                    for event in parse_sse_stream(resp):
+                                                        etype = event.get("type")
+                                                        if etype == "init":
+                                                            total_p = event.get("total", 0)
+                                                            sel_status.info(f"🎨 선택 렌더링 시작: {total_p}개 패널")
+                                                        elif etype == "progress":
+                                                            cur = event.get("current", 0)
+                                                            tot = event.get("total", 1)
+                                                            panel = event.get("panel", "")
+                                                            row = event.get("row", "")
+                                                            sel_progress.progress(safe_progress(cur, tot),
+                                                                                  text=f"패널 {cur}/{tot}")
+                                                            sel_detail.caption(f"🎨 렌더링 중: [{row}] {panel}")
+                                                        elif etype == "panel_done":
+                                                            r = event.get("rendered", 0)
+                                                            f = event.get("failed", 0)
+                                                            panel = event.get("panel", "")
+                                                            icon = "✅" if event.get("success") else "❌"
+                                                            sel_status.info(f"진행: 성공 {r}개 / 실패 {f}개")
+                                                            sel_detail.caption(f"{icon} {panel}")
+                                                        elif etype == "complete":
+                                                            final_event = event
+                                                            sel_progress.progress(1.0, text="완료!")
+                                                        elif etype == "error":
+                                                            st.error(event.get("error", "알 수 없는 오류"))
+
+                                                    if final_event:
+                                                        sel_detail.empty()
+                                                        r = final_event.get("rendered", 0)
+                                                        f = final_event.get("failed", 0)
+                                                        r_files = final_event.get("rendered_files", [])
+                                                        if final_event.get("success"):
+                                                            sel_status.success(f"렌더링 완료: {r}개 성공")
                                                         else:
-                                                            st.warning(f"부분 실패: {len(result.get('rendered', []))}개 성공, {len(result.get('failed', []))}개 실패")
-                                                        
-                                                        with st.expander("상세 로그"):
-                                                            for log in result.get('logs', []):
-                                                                st.text(log)
-                                                        
-                                                        if result.get('rendered'):
-                                                            with st.expander("저장된 파일 목록"):
-                                                                for item in result.get('rendered', []):
-                                                                    st.text(f"[{item['panel_id']}] {item['title']} → {item['path']}")
-                                                    else:
-                                                        st.error(f"렌더링 실패: {resp.json().get('error', 'Unknown error')}")
-                                                except Exception as e:
-                                                    st.error(f"오류: {str(e)}")
+                                                            sel_status.warning(f"부분 실패: {r}개 성공, {f}개 실패")
+                                                        if final_event.get("save_dir"):
+                                                            sel_log.info(f"저장 위치: `{final_event['save_dir']}`")
+                                                        if r > 0 and r_files:
+                                                            try:
+                                                                dl_resp = requests.post(
+                                                                    f"{API_URL}/api/render/download-files",
+                                                                    json={"files": r_files, "customer_name": render_customer},
+                                                                    timeout=120
+                                                                )
+                                                                if dl_resp.ok:
+                                                                    sel_log.download_button(
+                                                                        f"📥 {render_customer} 렌더링 이미지 다운로드",
+                                                                        data=dl_resp.content,
+                                                                        file_name=f"{render_customer}_rendered.zip",
+                                                                        mime="application/zip",
+                                                                        key="dl_selected_panels"
+                                                                    )
+                                                            except Exception:
+                                                                sel_log.caption("다운로드 준비 중 오류 발생")
+
+                                            except Exception as e:
+                                                st.error(f"오류: {str(e)}")
                                 else:
                                     st.error(panels_data.get('error', '패널 정보를 가져올 수 없습니다.'))
                             else:
@@ -451,21 +1027,112 @@ with tab2:
         except Exception as e:
             st.error(f"오류: {str(e)}")
 
+    elif st.session_state.get('render_mode') == 'download':
+        st.subheader("📥 렌더링 이미지 다운로드")
+        st.markdown("고객사 폴더에 저장된 렌더링 이미지를 ZIP 파일로 다운로드합니다.")
+        try:
+            response = requests.get(f"{API_URL}/api/customers", timeout=5)
+            if response.ok:
+                customers_data = response.json().get('customers', [])
+                customer_names = [c['name'] for c in customers_data]
+
+                dl_customer = st.selectbox(
+                    "고객사 선택",
+                    ["선택하세요"] + customer_names,
+                    key="dl_image_customer"
+                )
+
+                if dl_customer and dl_customer != "선택하세요":
+                    encoded_customer = urllib.parse.quote(dl_customer)
+
+                    dl_subdirs = []
+                    try:
+                        subdir_resp = requests.get(f"{API_URL}/api/customers/{encoded_customer}/subdirs", timeout=10)
+                        if subdir_resp.ok:
+                            dl_subdirs = [sd['name'] for sd in subdir_resp.json().get('subdirs', [])]
+                    except Exception:
+                        pass
+
+                    dl_subdir = ""
+                    if dl_subdirs:
+                        dl_subdir_options = ["전체 (모든 하위폴더 포함)"] + dl_subdirs
+                        dl_subdir_select = st.selectbox(
+                            "하위 폴더 선택",
+                            dl_subdir_options,
+                            key="dl_image_subdir"
+                        )
+                        if dl_subdir_select != "전체 (모든 하위폴더 포함)":
+                            dl_subdir = dl_subdir_select
+
+                    try:
+                        params = {}
+                        if dl_subdir:
+                            params['subdir'] = dl_subdir
+                        img_resp = requests.get(
+                            f"{API_URL}/api/customers/{encoded_customer}/images",
+                            params=params,
+                            timeout=10
+                        )
+                        if img_resp.ok:
+                            images = img_resp.json().get('images', [])
+                            if dl_subdir:
+                                st.info(f"📁 `{dl_customer}/{dl_subdir}` 폴더에 {len(images)}개 이미지 파일")
+                            else:
+                                st.info(f"📁 `{dl_customer}` 폴더에 {len(images)}개 이미지 파일 (하위폴더 제외)")
+                    except Exception:
+                        pass
+
+                    if st.button("📥 이미지 ZIP 다운로드", type="primary"):
+                        with st.spinner("이미지 파일 압축 중..."):
+                            try:
+                                params = {}
+                                if dl_subdir:
+                                    params['subdir'] = dl_subdir
+                                dl_resp = requests.get(
+                                    f"{API_URL}/api/customers/{encoded_customer}/images/download",
+                                    params=params,
+                                    timeout=120
+                                )
+                                if dl_resp.ok:
+                                    filename = f"{dl_customer}_images.zip"
+                                    if dl_subdir:
+                                        filename = f"{dl_customer}_{dl_subdir}_images.zip"
+                                    st.download_button(
+                                        label=f"💾 {filename} 저장",
+                                        data=dl_resp.content,
+                                        file_name=filename,
+                                        mime="application/zip"
+                                    )
+                                    st.success(f"✅ 다운로드 준비 완료!")
+                                else:
+                                    error_msg = "다운로드 실패"
+                                    try:
+                                        error_msg = dl_resp.json().get('error', error_msg)
+                                    except (ValueError, KeyError):
+                                        pass
+                                    st.error(f"❌ {error_msg}")
+                            except Exception as e:
+                                st.error(f"❌ 다운로드 오류: {str(e)}")
+            else:
+                st.error("고객사 목록을 불러올 수 없습니다.")
+        except Exception as e:
+            st.error(f"오류: {str(e)}")
+
 with tab3:
     st.header("🖼️ 이미지 삽입 (Step 1)")
     st.info("💡 템플릿 도형 이름과 일치하는 이미지를 자동 삽입합니다. 이미지 업로드 후 삽입을 실행하세요.")
     
     if 'img_insert_mode' not in st.session_state:
-        st.session_state['img_insert_mode'] = 'upload'
+        st.session_state['img_insert_mode'] = 'execute'
     
     img_col1, img_col2 = st.columns(2)
     with img_col1:
-        if st.button("📤 이미지 업로드", use_container_width=True, type="primary" if st.session_state.get('img_insert_mode') == 'upload' else "secondary"):
-            st.session_state['img_insert_mode'] = 'upload'
-            st.rerun()
-    with img_col2:
         if st.button("▶️ 삽입 실행", use_container_width=True, type="primary" if st.session_state.get('img_insert_mode') == 'execute' else "secondary"):
             st.session_state['img_insert_mode'] = 'execute'
+            st.rerun()
+    with img_col2:
+        if st.button("📤 이미지 업로드", use_container_width=True, type="primary" if st.session_state.get('img_insert_mode') == 'upload' else "secondary"):
+            st.session_state['img_insert_mode'] = 'upload'
             st.rerun()
     
     st.divider()
@@ -496,14 +1163,14 @@ with tab3:
                     if subdir_resp.ok:
                         existing_subdirs = subdir_resp.json().get('subdirs', [])
                 except Exception:
-                    pass
+                    st.caption("⚠️ 폴더 목록 로드 실패 (백엔드 연결 확인)")
             elif image_customer:
                 try:
                     subdir_resp = requests.get(f"{API_URL}/api/customers/{image_customer}/subdirs", timeout=10)
                     if subdir_resp.ok:
                         existing_subdirs = subdir_resp.json().get('subdirs', [])
                 except Exception:
-                    pass
+                    st.caption("⚠️ 폴더 목록 로드 실패 (백엔드 연결 확인)")
             
             NEW_FOLDER_OPTION = "➕ 새 폴더 생성..."
             ROOT_OPTION = "📁 루트 (고객사 폴더)"
@@ -546,7 +1213,7 @@ with tab3:
                                 if len(img_names) > 20:
                                     st.caption(f"... 외 {len(img_names) - 20}개")
                 except Exception:
-                    pass
+                    st.caption("⚠️ 기존 이미지 목록 로드 실패")
             
             uploaded_images = st.file_uploader(
                 "이미지 파일을 선택하세요",
@@ -556,7 +1223,7 @@ with tab3:
             )
             
             can_upload = uploaded_images and (is_root_report or image_customer)
-            if can_upload and st.button("📤 이미지 업로드", type="primary"):
+            if can_upload and st.button("📤 이미지 업로드", type="primary", key="img_upload_execute_btn"):
                 try:
                     files = [('files', (f.name, f, f'image/{f.type.split("/")[1]}')) for f in uploaded_images]
                     data = {'customer': image_customer, 'root_report': 'true' if is_root_report else 'false'}
@@ -605,44 +1272,107 @@ with tab3:
             run_images = st.button("🚀 이미지 삽입 실행", type="primary", use_container_width=True)
         
         if run_images:
-            with st.spinner("처리 중..."):
-                try:
-                    payload = {"customer_name": process_customer if process_customer else None}
-                    response = requests.post(f"{API_URL}/api/process/images", json=payload, timeout=300)
-                    
-                    if response.ok:
-                        result = response.json()
-                        
-                        logs = result.get('logs', [])
-                        if logs:
-                            st.markdown("**📋 진행 로그**")
-                            log_text = "\n".join(logs)
-                            st.markdown(
-                                f'<div style="background-color:#1e1e1e; color:#d4d4d4; padding:12px; '
-                                f'border-radius:6px; height:300px; overflow-y:auto; font-family:monospace; '
-                                f'font-size:13px; white-space:pre-wrap;">{log_text}</div>',
-                                unsafe_allow_html=True
+            progress_bar = st.progress(0, text="이미지 삽입 준비 중...")
+            status_text = st.empty()
+            log_area = st.empty()
+            log_container = st.container()
+            completed_summaries = []
+            current_file_header = ""
+            current_file_logs = []
+
+            def _img_render_log():
+                lines = list(completed_summaries[-5:])
+                if completed_summaries:
+                    lines.append("─" * 44)
+                if current_file_header:
+                    lines.append(current_file_header)
+                lines.extend(current_file_logs[-20:])
+                log_area.code("\n".join(lines), language=None)
+
+            try:
+                payload = {"customer_name": process_customer if process_customer else None}
+                resp = requests.post(
+                    f"{API_URL}/api/process/images/stream",
+                    json=payload, stream=True, timeout=(10, 1800)
+                )
+                if resp.status_code != 200:
+                    st.error(f"❌ 서버 오류: {resp.status_code}")
+                else:
+                    final_event = None
+                    for event in parse_sse_stream(resp):
+                        etype = event.get("type")
+                        if etype == "init":
+                            tf = event.get("total_files", 0)
+                            cust = event.get("customer", "전체")
+                            status_text.info(f"🚀 이미지 삽입 시작: {cust} - {tf}개 파일")
+                        elif etype == "file_start":
+                            fi = event.get("file_index", 0)
+                            tf = event.get("total_files", 1)
+                            fn = event.get("filename", "")
+                            fc = event.get("customer", "")
+                            progress_bar.progress(
+                                max(0.01, safe_progress(fi - 1, tf)),
+                                text=f"파일 {fi}/{tf}: {fc}/{fn}"
                             )
-                        
-                        if result.get('success'):
-                            st.success(f"✅ 이미지 삽입 완료! ({result['summary']['processed_count']}개 파일 처리)")
-                            
-                            with st.expander("처리 결과 상세", expanded=False):
-                                for file_info in result.get('processed_files', []):
-                                    st.write(f"📄 {file_info['template']} - {file_info['images_inserted']}개 이미지 삽입")
-                            
-                            if result.get('errors'):
-                                with st.expander("⚠️ 오류 내역"):
-                                    for error in result['errors']:
-                                        st.error(error)
+                            status_text.info(f"📂 [{fi}/{tf}] {fc} > {fn} 처리 중...")
+                            current_file_header = f"📂 [파일 {fi}/{tf}] {fc} > {fn}"
+                            current_file_logs.clear()
+                            _img_render_log()
+                        elif etype == "file_progress":
+                            fi = event.get("file_index", 0)
+                            tf = event.get("total_files", 1)
+                            sc = event.get("shape_current", 0)
+                            st_total = event.get("shape_total", 1)
+                            ins = event.get("inserted", 0)
+                            msg = event.get("message", "")
+                            base_p = safe_progress(fi - 1, tf)
+                            shape_p = (sc / st_total) / tf if st_total > 0 and tf > 0 else 0
+                            progress_bar.progress(
+                                min(0.99, base_p + shape_p),
+                                text=f"파일 {fi}/{tf} - {sc}/{st_total} ({ins}개 삽입)"
+                            )
+                            if msg:
+                                current_file_logs.append(f"  {msg}")
+                                _img_render_log()
+                        elif etype == "file_done":
+                            fi = event.get("file_index", 0)
+                            tf = event.get("total_files", 1)
+                            fn = event.get("filename", "")
+                            fc = event.get("customer", "")
+                            if event.get("success"):
+                                ins = event.get("images_inserted", 0)
+                                skp = event.get("skipped", 0)
+                                summary = f"✅ [{fi}/{tf}] {fc} > {fn} — {ins}개 삽입, {skp}개 스킵"
+                            else:
+                                summary = f"❌ [{fi}/{tf}] {fc} > {fn} — {event.get('error', '')}"
+                            completed_summaries.append(summary)
+                            current_file_logs.clear()
+                            _img_render_log()
+                        elif etype == "complete":
+                            final_event = event
+                            progress_bar.progress(1.0, text="완료!")
+                        elif etype == "error":
+                            st.error(event.get("error", "알 수 없는 오류"))
+
+                    if final_event:
+                        pc = final_event.get("processed_count", 0)
+                        ec = final_event.get("error_count", 0)
+                        ti = final_event.get("total_images_inserted", 0)
+                        if final_event.get("success"):
+                            status_text.success(f"✅ 이미지 삽입 완료! {pc}개 파일 처리, 총 {ti}개 이미지 삽입")
                         else:
-                            st.error("❌ 이미지 삽입 실패")
-                            for error in result.get('errors', []):
-                                st.error(error)
-                    else:
-                        st.error(f"❌ 서버 오류: {response.status_code}")
-                except Exception as e:
-                    st.error(f"❌ 실행 실패: {str(e)}")
+                            status_text.warning(f"⚠️ 부분 완료: {pc}개 성공, {ec}개 실패")
+
+                        if final_event.get("processed_files"):
+                            with log_container.expander("처리 결과 상세", expanded=False):
+                                for file_info in final_event["processed_files"]:
+                                    st.write(f"📄 {file_info.get('customer','')}/{file_info['template']} - {file_info.get('images_inserted',0)}개 이미지 삽입")
+                        if final_event.get("errors"):
+                            with log_container.expander(f"⚠️ 오류 내역 ({ec}개)"):
+                                for error in final_event["errors"]:
+                                    st.error(error)
+            except Exception as e:
+                st.error(f"❌ 실행 실패: {str(e)}")
 
 with tab4:
     st.header("📈 통계 삽입 (Step 2)")
@@ -672,51 +1402,113 @@ with tab4:
         run_stats = st.button("🚀 통계 삽입 실행", type="primary", use_container_width=True)
     
     if run_stats:
-        with st.spinner("처리 중... (Grafana 조회 시간이 소요될 수 있습니다)"):
-            try:
-                payload = {"customer_name": stats_customer if stats_customer else None}
-                response = requests.post(f"{API_URL}/api/process/statistics", json=payload, timeout=600)
-                
-                if response.ok:
-                    result = response.json()
-                    
-                    logs = result.get('logs', [])
-                    if logs:
-                        st.markdown("**📋 진행 로그**")
-                        log_text = "\n".join(logs)
-                        st.markdown(
-                            f'<div style="background-color:#1e1e1e; color:#d4d4d4; padding:12px; '
-                            f'border-radius:6px; height:300px; overflow-y:auto; font-family:monospace; '
-                            f'font-size:13px; white-space:pre-wrap;">{log_text}</div>',
-                            unsafe_allow_html=True
-                        )
-                    
-                    if result.get('success'):
-                        st.success(f"✅ 통계 삽입 완료! ({result['summary']['processed_count']}개 파일 처리)")
-                        
-                        with st.expander("처리 결과 상세", expanded=False):
-                            for file_info in result.get('processed_files', []):
-                                st.write(f"📄 {file_info['template']} - {file_info.get('grafana_queries', 0)}개 통계 조회")
-                        
-                        if result.get('failed_placeholders'):
-                            with st.expander(f"⚠️ 실패한 플레이스홀더 ({len(result['failed_placeholders'])}개)"):
-                                for failed in result['failed_placeholders']:
-                                    st.warning(f"{failed['placeholder']}: {failed['reason']}")
-                        
-                        if result.get('errors'):
-                            with st.expander("⚠️ 오류 내역"):
-                                for error in result['errors']:
-                                    st.error(error)
-                    else:
-                        st.error("❌ 통계 삽입 실패")
-                        for error in result.get('errors', []):
-                            st.error(error)
-                else:
-                    st.error(f"❌ 서버 오류: {response.status_code}")
-            except Exception as e:
-                st.error(f"❌ 실행 실패: {str(e)}")
+        progress_bar = st.progress(0, text="통계 삽입 준비 중...")
+        status_text = st.empty()
+        log_area = st.empty()
+        log_container = st.container()
+        completed_summaries = []
+        current_file_header = ""
+        current_file_logs = []
 
-with tab5:
+        def _stats_render_log():
+            lines = list(completed_summaries[-5:])
+            if completed_summaries:
+                lines.append("─" * 44)
+            if current_file_header:
+                lines.append(current_file_header)
+            lines.extend(current_file_logs[-20:])
+            log_area.code("\n".join(lines), language=None)
+
+        try:
+            payload = {"customer_name": stats_customer if stats_customer else None}
+            resp = requests.post(
+                f"{API_URL}/api/process/statistics/stream",
+                json=payload, stream=True, timeout=(10, 3600)
+            )
+            if resp.status_code != 200:
+                st.error(f"❌ 서버 오류: {resp.status_code}")
+            else:
+                final_event = None
+                for event in parse_sse_stream(resp):
+                    etype = event.get("type")
+                    if etype == "init":
+                        tf = event.get("total_files", 0)
+                        cust = event.get("customer", "전체")
+                        status_text.info(f"🚀 통계 삽입 시작: {cust} - {tf}개 파일")
+                    elif etype == "file_start":
+                        fi = event.get("file_index", 0)
+                        tf = event.get("total_files", 1)
+                        fn = event.get("filename", "")
+                        fc = event.get("customer", "")
+                        progress_bar.progress(
+                            max(0.01, safe_progress(fi - 1, tf)),
+                            text=f"파일 {fi}/{tf}: {fc}/{fn}"
+                        )
+                        status_text.info(f"📂 [{fi}/{tf}] {fc} > {fn} 처리 중...")
+                        current_file_header = f"📂 [파일 {fi}/{tf}] {fc} > {fn}"
+                        current_file_logs.clear()
+                        _stats_render_log()
+                    elif etype == "file_progress":
+                        fi = event.get("file_index", 0)
+                        tf = event.get("total_files", 1)
+                        msg = event.get("message", "")
+                        ph_c = event.get("placeholder_current", 0)
+                        ph_t = event.get("placeholder_total", 0)
+                        base_p = safe_progress(fi - 1, tf)
+                        if ph_t > 0:
+                            ph_p = (ph_c / ph_t) / tf
+                            progress_bar.progress(
+                                min(0.99, base_p + ph_p),
+                                text=f"파일 {fi}/{tf} - 플레이스홀더 {ph_c}/{ph_t}"
+                            )
+                        if msg:
+                            current_file_logs.append(f"  {msg}")
+                            _stats_render_log()
+                    elif etype == "file_done":
+                        fi = event.get("file_index", 0)
+                        tf = event.get("total_files", 1)
+                        fn = event.get("filename", "")
+                        fc = event.get("customer", "")
+                        if event.get("success"):
+                            gq = event.get("grafana_queries", 0)
+                            fp = event.get("failed_placeholders", 0)
+                            summary = f"✅ [{fi}/{tf}] {fc} > {fn} — {gq}개 통계, {fp}개 실패"
+                        else:
+                            summary = f"❌ [{fi}/{tf}] {fc} > {fn} — {event.get('error', '')}"
+                        completed_summaries.append(summary)
+                        current_file_logs.clear()
+                        _stats_render_log()
+                    elif etype == "complete":
+                        final_event = event
+                        progress_bar.progress(1.0, text="완료!")
+                    elif etype == "error":
+                        st.error(event.get("error", "알 수 없는 오류"))
+
+                if final_event:
+                    pc = final_event.get("processed_count", 0)
+                    ec = final_event.get("error_count", 0)
+                    tg = final_event.get("total_grafana_queries", 0)
+                    fpc = final_event.get("failed_placeholder_count", 0)
+                    if final_event.get("success"):
+                        status_text.success(f"✅ 통계 삽입 완료! {pc}개 파일 처리, 총 {tg}개 통계 삽입")
+                    else:
+                        status_text.warning(f"⚠️ 부분 완료: {pc}개 성공, {ec}개 실패")
+
+                    if final_event.get("processed_files"):
+                        with log_container.expander("처리 결과 상세", expanded=False):
+                            for file_info in final_event["processed_files"]:
+                                st.write(f"📄 {file_info.get('customer','')}/{file_info['template']} - {file_info.get('grafana_queries',0)}개 통계, {file_info.get('failed_placeholders',0)}개 실패")
+                    if fpc > 0:
+                        with log_container.expander(f"⚠️ 실패한 플레이스홀더 ({fpc}개)"):
+                            st.warning("상세 내용은 로그 탭에서 확인하세요.")
+                    if final_event.get("errors"):
+                        with log_container.expander(f"⚠️ 오류 내역 ({ec}개)"):
+                            for error in final_event["errors"]:
+                                st.error(error)
+        except Exception as e:
+            st.error(f"❌ 실행 실패: {str(e)}")
+
+with tab8:
     st.header("👥 고객사 관리")
     st.info("💡 고객사 추가/삭제 및 Grafana 대시보드 UID를 매핑합니다.")
     
@@ -914,12 +1706,12 @@ with tab6:
         st.session_state['last_tab5_access'] = time.time()
     
     if 'template_mgmt_mode' not in st.session_state:
-        st.session_state['template_mgmt_mode'] = 'upload'
+        st.session_state['template_mgmt_mode'] = 'editor'
     
     tmpl_col1, tmpl_col2, tmpl_col3, tmpl_col4 = st.columns(4)
     with tmpl_col1:
-        if st.button("📤 업로드", use_container_width=True, type="primary" if st.session_state.get('template_mgmt_mode') == 'upload' else "secondary"):
-            st.session_state['template_mgmt_mode'] = 'upload'
+        if st.button("📝 편집기", use_container_width=True, type="primary" if st.session_state.get('template_mgmt_mode') == 'editor' else "secondary"):
+            st.session_state['template_mgmt_mode'] = 'editor'
             st.rerun()
     with tmpl_col2:
         if st.button("➕ 자동 생성", use_container_width=True, type="primary" if st.session_state.get('template_mgmt_mode') == 'generate' else "secondary"):
@@ -930,8 +1722,8 @@ with tab6:
             st.session_state['template_mgmt_mode'] = 'add_vm'
             st.rerun()
     with tmpl_col4:
-        if st.button("📝 편집기", use_container_width=True, type="primary" if st.session_state.get('template_mgmt_mode') == 'editor' else "secondary"):
-            st.session_state['template_mgmt_mode'] = 'editor'
+        if st.button("📤 업로드", use_container_width=True, type="primary" if st.session_state.get('template_mgmt_mode') == 'upload' else "secondary"):
+            st.session_state['template_mgmt_mode'] = 'upload'
             st.rerun()
     
     st.divider()
@@ -974,100 +1766,261 @@ with tab6:
     
     elif st.session_state.get('template_mgmt_mode') == 'generate':
         st.subheader("📄 신규 템플릿 자동 생성")
-        st.info("마스터 템플릿 + 이미지 폴더 분석 → VM별 슬라이드 자동 생성")
-        
-        if 'template_gen_result' in st.session_state:
-            gen_msg = st.session_state['template_gen_result']
-            st.success(f"✅ 템플릿 생성 완료! ({gen_msg.get('customer', '')})")
-            st.info(f"VM {gen_msg.get('vm_count', 0)}개, 슬라이드 {gen_msg.get('slide_count', 0)}개")
-            if gen_msg.get('logs'):
-                with st.expander("📋 생성 로그"):
-                    for log in gen_msg['logs']:
-                        st.text(log)
-            if st.button("✖️ 메시지 닫기", key="close_gen_msg"):
-                del st.session_state['template_gen_result']
+
+        if 'generate_sub_mode' not in st.session_state:
+            st.session_state['generate_sub_mode'] = 'with_images'
+
+        _GEN_ANALYZE_TTL = 600
+        if st.session_state.get('gen_analyze_clicked'):
+            _elapsed = time.time() - st.session_state.get('gen_analyze_ts', 0)
+            if _elapsed > _GEN_ANALYZE_TTL:
+                st.session_state['gen_analyze_clicked'] = False
+                st.session_state.pop('gen_analyze_ts', None)
+
+        gen_sub_col1, gen_sub_col2 = st.columns(2)
+        with gen_sub_col1:
+            if st.button("🖼️ 렌더링 이미지 파일 있음", use_container_width=True,
+                         type="primary" if st.session_state.get('generate_sub_mode') == 'with_images' else "secondary"):
+                st.session_state['generate_sub_mode'] = 'with_images'
+                st.session_state['gen_analyze_clicked'] = False
+                st.session_state.pop('gen_analyze_ts', None)
                 st.rerun()
-        
-        try:
-            target_customers = [c['name'] for c in fetch_customers_cached(API_URL)]
-            
-            if target_customers:
-                gen_col1, gen_col2 = st.columns(2)
-                
-                with gen_col1:
-                    if 'gen_target_customer' in st.session_state:
-                        if st.session_state['gen_target_customer'] not in target_customers:
-                            del st.session_state['gen_target_customer']
-                    
-                    gen_customer = st.selectbox(
-                        "고객사 선택",
-                        options=target_customers,
-                        key="gen_target_customer"
-                    )
-                
-                with gen_col2:
-                    if st.button("🔍 VM 분석", type="secondary"):
-                        st.session_state['gen_analyze_clicked'] = True
-                
-                if gen_customer and st.session_state.get('gen_analyze_clicked'):
-                    try:
-                        analyze_resp = requests.get(f"{API_URL}/api/customers/{gen_customer}/analyze-vms", timeout=15)
-                        if analyze_resp.ok:
-                            analyze_data = analyze_resp.json()
-                            vms = analyze_data.get('vms', [])
-                            
-                            if vms:
-                                st.success(f"✅ VM {len(vms)}개 발견")
-                                
-                                with st.expander("📊 VM 분석 결과", expanded=True):
-                                    for vm in vms:
-                                        vm_name = vm.get('vm_name', 'Unknown')
-                                        vm_ip = vm.get('ip', '')
-                                        resources = vm.get('resources', [])
-                                        pages = vm.get('pages_needed', 0)
-                                        
-                                        st.markdown(f"**{vm_name}** ({vm_ip})")
-                                        st.caption(f"리소스 {len(resources)}개 → 슬라이드 {pages}페이지")
-                                        
-                                        if resources:
-                                            res_names = [r.get('name', '') for r in resources]
-                                            st.write(f"  리소스: {', '.join(res_names)}")
-                                
-                                if st.button("🚀 템플릿 자동 생성", type="primary", key="gen_template_btn"):
-                                    with st.spinner("템플릿 생성 중..."):
+        with gen_sub_col2:
+            if st.button("📡 렌더링 이미지 파일 없음 (대시보드 기반)", use_container_width=True,
+                         type="primary" if st.session_state.get('generate_sub_mode') == 'no_images' else "secondary"):
+                st.session_state['generate_sub_mode'] = 'no_images'
+                st.session_state['gen_analyze_clicked'] = False
+                st.session_state.pop('gen_analyze_ts', None)
+                st.rerun()
+
+        st.divider()
+
+        if st.session_state.get('generate_sub_mode') == 'with_images':
+            st.info("마스터 템플릿 + 이미지 폴더 분석 → VM별 슬라이드 자동 생성")
+
+            if 'template_gen_result' in st.session_state:
+                gen_msg = st.session_state['template_gen_result']
+                st.success(f"✅ 템플릿 생성 완료! ({gen_msg.get('customer', '')})")
+                st.info(f"VM {gen_msg.get('vm_count', 0)}개, 슬라이드 {gen_msg.get('slide_count', 0)}개")
+                if gen_msg.get('logs'):
+                    with st.expander("📋 생성 로그"):
+                        for log in gen_msg['logs']:
+                            st.text(log)
+                if st.button("✖️ 메시지 닫기", key="close_gen_msg"):
+                    del st.session_state['template_gen_result']
+                    st.rerun()
+
+            try:
+                target_customers = [c['name'] for c in fetch_customers_cached(API_URL)]
+
+                if target_customers:
+                    gen_col1, gen_col2 = st.columns(2)
+
+                    with gen_col1:
+                        if 'gen_target_customer' in st.session_state:
+                            if st.session_state['gen_target_customer'] not in target_customers:
+                                del st.session_state['gen_target_customer']
+
+                        gen_customer = st.selectbox(
+                            "고객사 선택",
+                            options=target_customers,
+                            key="gen_target_customer"
+                        )
+
+                    with gen_col2:
+                        if st.button("🔍 VM 분석", type="secondary"):
+                            st.session_state['gen_analyze_clicked'] = True
+                            st.session_state['gen_analyze_ts'] = time.time()
+
+                    if gen_customer and st.session_state.get('gen_analyze_clicked'):
+                        try:
+                            analyze_resp = requests.get(f"{API_URL}/api/customers/{gen_customer}/analyze-vms", timeout=15)
+                            if analyze_resp.ok:
+                                analyze_data = analyze_resp.json()
+                                vms = analyze_data.get('vms', [])
+
+                                if vms:
+                                    st.success(f"✅ VM {len(vms)}개 발견")
+
+                                    with st.expander("📊 VM 분석 결과", expanded=True):
+                                        for vm in vms:
+                                            vm_name = vm.get('vm_name', 'Unknown')
+                                            vm_ip = vm.get('ip', '')
+                                            resources = vm.get('resources', [])
+                                            pages = vm.get('pages_needed', 0)
+
+                                            st.markdown(f"**{vm_name}** ({vm_ip})")
+                                            st.caption(f"리소스 {len(resources)}개 → 슬라이드 {pages}페이지")
+
+                                            if resources:
+                                                res_names = [r.get('name', '') for r in resources]
+                                                st.write(f"  리소스: {', '.join(res_names)}")
+
+                                    if st.button("🚀 템플릿 자동 생성", type="primary", key="gen_template_btn"):
+                                        with st.spinner("템플릿 생성 중..."):
+                                            try:
+                                                gen_resp = requests.post(
+                                                    f"{API_URL}/api/templates/generate",
+                                                    json={"customer_name": gen_customer},
+                                                    timeout=120
+                                                )
+                                                if gen_resp.ok:
+                                                    gen_result = gen_resp.json()
+                                                    if gen_result.get('success'):
+                                                        st.session_state['template_gen_result'] = {
+                                                            'customer': gen_customer,
+                                                            'vm_count': gen_result.get('vm_count', 0),
+                                                            'slide_count': gen_result.get('slide_count', 0),
+                                                            'logs': gen_result.get('logs', [])
+                                                        }
+                                                        st.session_state['gen_analyze_clicked'] = False
+                                                        st.rerun()
+                                                    else:
+                                                        st.error(f"❌ 생성 실패: {', '.join(gen_result.get('errors', []))}")
+                                                else:
+                                                    st.error(f"❌ 서버 오류: {gen_resp.status_code}")
+                                            except Exception as e:
+                                                st.error(f"❌ 오류: {str(e)}")
+                                else:
+                                    st.warning("이미지 폴더에 VM 디렉토리가 없습니다.")
+                            else:
+                                st.error("VM 분석 실패")
+                        except Exception as e:
+                            st.error(f"분석 오류: {str(e)}")
+                else:
+                    st.warning("등록된 고객사가 없습니다. 먼저 고객사를 추가하세요.")
+            except Exception as e:
+                st.error(f"오류 발생: {str(e)}")
+
+        elif st.session_state.get('generate_sub_mode') == 'no_images':
+            st.info("Grafana 대시보드의 Row/패널 구조를 분석하여, 이미지 렌더링 없이 바로 템플릿을 생성합니다.")
+
+            try:
+                db_tmpl_cust_resp = requests.get(f"{API_URL}/api/customers", timeout=5)
+                if db_tmpl_cust_resp.ok:
+                    db_tmpl_customers = db_tmpl_cust_resp.json().get('customers', [])
+                    db_tmpl_customers_with_uid = [c for c in db_tmpl_customers if c.get('dashboard_uid')]
+
+                    if not db_tmpl_customers_with_uid:
+                        st.warning("대시보드 UID가 등록된 고객사가 없습니다. 고객사 관리 탭에서 UID를 먼저 등록해주세요.")
+                    else:
+                        db_tmpl_names = [c['name'] for c in db_tmpl_customers_with_uid]
+                        db_tmpl_selected = st.selectbox(
+                            "고객사 선택",
+                            db_tmpl_names,
+                            key="db_tmpl_customer_select"
+                        )
+
+                        selected_master = None
+
+                        scan_clicked = st.button("📡 대시보드 구조 조회", type="primary", key="db_tmpl_scan")
+
+                        if scan_clicked:
+                            encoded_name = urllib.parse.quote(db_tmpl_selected)
+                            with st.spinner("대시보드 구조를 조회하는 중..."):
+                                try:
+                                    structure_resp = requests.get(
+                                        f"{API_URL}/api/dashboard/structure/{encoded_name}",
+                                        timeout=30
+                                    )
+                                    if structure_resp.ok:
+                                        structure_data = structure_resp.json()
+                                        st.session_state['db_tmpl_structure'] = structure_data
+                                        st.session_state['db_tmpl_structure_customer'] = db_tmpl_selected
+                                    else:
+                                        err = structure_resp.json().get('error', '알 수 없는 오류')
+                                        st.error(f"구조 조회 실패: {err}")
+                                        st.session_state.pop('db_tmpl_structure', None)
+                                except Exception as e:
+                                    st.error(f"구조 조회 오류: {str(e)}")
+                                    st.session_state.pop('db_tmpl_structure', None)
+
+                        if st.session_state.get('db_tmpl_structure') and st.session_state.get('db_tmpl_structure_customer') == db_tmpl_selected:
+                            structure_data = st.session_state['db_tmpl_structure']
+                            vms = structure_data.get('vms', [])
+                            total_vms = structure_data.get('total_vms', 0)
+                            total_resources = structure_data.get('total_resources', 0)
+
+                            st.success(f"VM {total_vms}개, 리소스 {total_resources}개 발견")
+
+                            for vm in vms:
+                                vm_label = f"{vm['vm_name']}"
+                                if vm['ip']:
+                                    vm_label += f" ({vm['ip']})"
+                                with st.expander(f"🖥️ {vm_label} - 리소스 {len(vm['resources'])}개", expanded=False):
+                                    st.caption(f"Row 원본: {vm.get('row_title_raw', vm['dir_name'])}")
+                                    if vm['resources']:
+                                        res_data = []
+                                        for res in vm['resources']:
+                                            res_data.append({
+                                                "리소스명": res['name'],
+                                                "패널ID": res['panel_id'],
+                                                "쿼리타입": res['query'],
+                                                "파일명": res['filename']
+                                            })
+                                        st.dataframe(res_data, use_container_width=True, hide_index=True)
+                                    else:
+                                        st.caption("리소스 없음")
+
+                            st.divider()
+                            st.subheader("📄 마스터 템플릿 선택 및 생성")
+                            try:
+                                master_resp = requests.get(f"{API_URL}/api/templates", timeout=5)
+                                if master_resp.ok:
+                                    resp_data = master_resp.json()
+                                    templates_list = resp_data.get('templates', resp_data) if isinstance(resp_data, dict) else resp_data
+                                    root_templates = [t for t in templates_list
+                                                    if not t.get('customer') and t.get('filename', t.get('name', '')).endswith('.pptx')]
+                                    if root_templates:
+                                        master_options = [t.get('filename', t.get('name', '')) for t in root_templates]
+                                        selected_master = st.selectbox(
+                                            "마스터 템플릿",
+                                            master_options,
+                                            key="db_tmpl_master_select"
+                                        )
+                                    else:
+                                        st.warning("루트 디렉토리에 마스터 템플릿(.pptx)이 없습니다.")
+                                else:
+                                    st.error("템플릿 목록을 불러올 수 없습니다.")
+                            except Exception as e:
+                                st.error(f"템플릿 목록 로드 실패: {str(e)}")
+
+                            if selected_master:
+                                gen_clicked = st.button("📄 템플릿 생성", type="primary", key="db_tmpl_generate")
+                                if gen_clicked:
+                                    with st.spinner("대시보드 기반 템플릿 생성 중..."):
                                         try:
                                             gen_resp = requests.post(
-                                                f"{API_URL}/api/templates/generate",
-                                                json={"customer_name": gen_customer},
-                                                timeout=120
+                                                f"{API_URL}/api/templates/generate-from-dashboard",
+                                                json={
+                                                    "customer_name": db_tmpl_selected,
+                                                    "master_template": selected_master
+                                                },
+                                                timeout=60
                                             )
-                                            if gen_resp.ok:
-                                                gen_result = gen_resp.json()
-                                                if gen_result.get('success'):
-                                                    st.session_state['template_gen_result'] = {
-                                                        'customer': gen_customer,
-                                                        'vm_count': gen_result.get('vm_count', 0),
-                                                        'slide_count': gen_result.get('slide_count', 0),
-                                                        'logs': gen_result.get('logs', [])
-                                                    }
-                                                    st.session_state['gen_analyze_clicked'] = False
-                                                    st.rerun()
-                                                else:
-                                                    st.error(f"❌ 생성 실패: {', '.join(gen_result.get('errors', []))}")
+                                            gen_result = gen_resp.json()
+                                            if gen_result.get("success"):
+                                                st.success(f"템플릿 생성 완료! VM {gen_result.get('vm_count', 0)}개, 슬라이드 {gen_result.get('slide_count', 0)}개")
+                                                if gen_result.get("logs"):
+                                                    with st.expander("생성 로그", expanded=False):
+                                                        for log_line in gen_result["logs"]:
+                                                            st.text(log_line)
+                                                if gen_result.get("output_path"):
+                                                    st.info(f"저장 위치: `{gen_result['output_path']}`")
                                             else:
-                                                st.error(f"❌ 서버 오류: {gen_resp.status_code}")
+                                                errors = gen_result.get("errors", [])
+                                                for err in errors:
+                                                    st.error(f"오류: {err}")
+                                                if gen_result.get("logs"):
+                                                    with st.expander("생성 로그"):
+                                                        for log_line in gen_result["logs"]:
+                                                            st.text(log_line)
                                         except Exception as e:
-                                            st.error(f"❌ 오류: {str(e)}")
-                            else:
-                                st.warning("이미지 폴더에 VM 디렉토리가 없습니다.")
-                        else:
-                            st.error("VM 분석 실패")
-                    except Exception as e:
-                        st.error(f"분석 오류: {str(e)}")
-            else:
-                st.warning("등록된 고객사가 없습니다. 먼저 고객사를 추가하세요.")
-        except Exception as e:
-            st.error(f"오류 발생: {str(e)}")
+                                            st.error(f"템플릿 생성 실패: {str(e)}")
+                else:
+                    st.error(f"고객사 목록을 불러올 수 없습니다. (상태 코드: {db_tmpl_cust_resp.status_code})")
+            except Exception as e:
+                st.error(f"서버 연결 실패: {str(e)}")
     
     elif st.session_state.get('template_mgmt_mode') == 'add_vm':
         st.subheader("➕ 기존 템플릿에 VM 추가")
@@ -1878,6 +2831,147 @@ with tab6:
             st.error(f"템플릿 목록 로드 실패: {str(e)}")
 
 with tab7:
+    st.header("📋 작업 로그")
+    st.info("💡 이미지 삽입, 통계 삽입 등 작업 이력을 확인할 수 있습니다. 탭을 전환해도 로그가 유지됩니다.")
+
+    log_col1, log_col2, log_col3 = st.columns([2, 2, 1])
+    with log_col1:
+        log_filter_type = st.selectbox(
+            "작업 유형",
+            ["전체", "이미지 삽입", "통계 삽입", "이미지 렌더링", "템플릿 생성"],
+            key="log_filter_type"
+        )
+    with log_col2:
+        log_filter_status = st.selectbox(
+            "결과",
+            ["전체", "success", "failed", "running"],
+            key="log_filter_status"
+        )
+    with log_col3:
+        st.write("")
+        st.write("")
+        log_refresh = st.button("🔄 새로고침", key="log_refresh", use_container_width=True)
+
+    try:
+        log_params = {}
+        if log_filter_type != "전체":
+            log_params["action_type"] = log_filter_type
+        if log_filter_status != "전체":
+            log_params["status"] = log_filter_status
+        log_params["limit"] = 50
+
+        log_resp = requests.get(f"{API_URL}/api/logs", params=log_params, timeout=5)
+        if log_resp.ok:
+            log_data = log_resp.json()
+            log_entries = log_data.get("logs", [])
+
+            if not log_entries:
+                st.caption("저장된 로그가 없습니다.")
+            else:
+                st.caption(f"총 {len(log_entries)}건의 로그")
+
+                for entry in log_entries:
+                    log_id = entry.get("id", "")
+                    action = entry.get("action_type", "")
+                    customer = entry.get("customer", "")
+                    status = entry.get("status", "")
+                    start_t = entry.get("start_time", "")
+                    end_t = entry.get("end_time", "")
+                    duration = entry.get("duration_seconds")
+                    summary = entry.get("summary", {})
+
+                    if status == "success":
+                        status_icon = "✅"
+                    elif status == "failed":
+                        status_icon = "❌"
+                    else:
+                        status_icon = "⏳"
+
+                    start_display = start_t[:19].replace("T", " ") if start_t else "-"
+                    end_display = end_t[:19].replace("T", " ") if end_t else "-"
+                    duration_display = f"{duration}초" if duration else "-"
+
+                    summary_parts = []
+                    if summary.get("processed_count") is not None:
+                        summary_parts.append(f"처리: {summary['processed_count']}건")
+                    if summary.get("error_count"):
+                        summary_parts.append(f"오류: {summary['error_count']}건")
+                    if summary.get("total_images_inserted"):
+                        summary_parts.append(f"이미지: {summary['total_images_inserted']}개")
+                    if summary.get("total_grafana_queries"):
+                        summary_parts.append(f"통계: {summary['total_grafana_queries']}개")
+                    summary_text = " | ".join(summary_parts) if summary_parts else ""
+
+                    header_text = f"{status_icon} **{action}** | 고객사: {customer} | {start_display} ~ {end_display} ({duration_display})"
+                    if summary_text:
+                        header_text += f" | {summary_text}"
+
+                    with st.expander(header_text, expanded=False):
+                        detail_col1, detail_col2 = st.columns([4, 1])
+                        with detail_col2:
+                            if st.button("🗑️ 삭제", key=f"del_log_{log_id}", use_container_width=True):
+                                try:
+                                    del_resp = requests.delete(f"{API_URL}/api/logs/{log_id}", timeout=5)
+                                    if del_resp.ok:
+                                        st.success("삭제됨")
+                                        st.rerun()
+                                    else:
+                                        st.error("삭제 실패")
+                                except:
+                                    st.error("삭제 실패")
+
+                        try:
+                            detail_resp = requests.get(f"{API_URL}/api/logs/{log_id}", timeout=5)
+                            if detail_resp.ok:
+                                detail_data = detail_resp.json().get("log", {})
+                                detail_logs = detail_data.get("detail_logs", [])
+                                detail_errors = detail_data.get("errors", [])
+
+                                if detail_logs:
+                                    log_lines = []
+                                    for dl in detail_logs:
+                                        t = dl.get("time", "")[:19].replace("T", " ")
+                                        m = dl.get("message", "")
+                                        log_lines.append(f"[{t}] {m}")
+                                    log_text = "\n".join(log_lines)
+                                    st.markdown(
+                                        f'<div style="background-color:#1e1e1e; color:#d4d4d4; padding:12px; '
+                                        f'border-radius:6px; max-height:400px; overflow-y:auto; font-family:monospace; '
+                                        f'font-size:12px; white-space:pre-wrap;">{log_text}</div>',
+                                        unsafe_allow_html=True
+                                    )
+
+                                if detail_errors:
+                                    st.markdown("**오류 목록:**")
+                                    for de in detail_errors:
+                                        t = de.get("time", "")[:19].replace("T", " ")
+                                        m = de.get("message", "")
+                                        st.error(f"[{t}] {m}")
+
+                                if not detail_logs and not detail_errors:
+                                    st.caption("상세 로그가 없습니다.")
+                            else:
+                                st.warning("상세 로그를 불러올 수 없습니다.")
+                        except Exception as e:
+                            st.warning(f"상세 로그 로드 실패: {str(e)}")
+
+                st.divider()
+                if st.button("🗑️ 전체 로그 삭제", type="secondary", key="clear_all_logs"):
+                    try:
+                        clear_resp = requests.delete(f"{API_URL}/api/logs", timeout=5)
+                        if clear_resp.ok:
+                            st.success("전체 로그가 삭제되었습니다.")
+                            st.rerun()
+                        else:
+                            st.error("로그 삭제 실패")
+                    except:
+                        st.error("로그 삭제 실패")
+        else:
+            st.error("로그를 불러올 수 없습니다.")
+    except Exception as e:
+        st.warning(f"로그 서버 연결 실패: {str(e)} - 백엔드에 activity_logger 모듈이 배포되었는지 확인하세요.")
+
+with tab5:
     st.header("📥 다운로드")
     
     st.subheader("📦 템플릿 다운로드")
@@ -1950,7 +3044,7 @@ with tab7:
         except Exception as e:
             st.error(f"❌ 다운로드 실패: {str(e)}")
 
-with tab8:
+with tab9:
     st.header("⚙️ 설정")
     
     st.subheader("🔗 백엔드 API 연결")
