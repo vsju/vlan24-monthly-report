@@ -26,6 +26,7 @@ import image_processor
 import stats_processor
 import template_generator
 import image_renderer
+import activity_logger
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
@@ -374,6 +375,51 @@ def get_customer_images(customer_name):
         "subdir": subdir,
         "images": images
     })
+
+@app.route('/api/customers/<customer_name>/images/download', methods=['GET'])
+def download_customer_images(customer_name):
+    is_valid, error_msg = validate_customer_name(customer_name)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+
+    subdir = request.args.get('subdir', '')
+    if subdir:
+        is_valid_subdir, subdir_error = validate_customer_name(subdir)
+        if not is_valid_subdir:
+            return jsonify({"success": False, "error": f"하위 디렉토리: {subdir_error}"}), 400
+        target_dir = os.path.join(config.BASE_IMAGE_DIR, customer_name, subdir)
+    else:
+        target_dir = os.path.join(config.BASE_IMAGE_DIR, customer_name)
+
+    if not validate_path_in_base(target_dir, config.BASE_IMAGE_DIR):
+        return jsonify({"success": False, "error": "잘못된 경로입니다."}), 400
+
+    if not os.path.exists(target_dir) or not os.path.isdir(target_dir):
+        return jsonify({"success": False, "error": f"폴더가 존재하지 않습니다: {customer_name}"}), 404
+
+    memory_file = io.BytesIO()
+    file_count = 0
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(target_dir):
+            for file in files:
+                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                    file_path = os.path.join(root, file)
+                    if os.path.isfile(file_path):
+                        arcname = os.path.relpath(file_path, target_dir)
+                        zipf.write(file_path, arcname)
+                        file_count += 1
+
+    if file_count == 0:
+        return jsonify({"success": False, "error": "다운로드할 이미지 파일이 없습니다."}), 404
+
+    memory_file.seek(0)
+    download_name = f"{customer_name}_{subdir}_images.zip" if subdir else f"{customer_name}_images.zip"
+    return send_file(
+        memory_file,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=download_name
+    )
 
 @app.route('/api/customers/<customer_name>/analyze-vms', methods=['GET'])
 def analyze_customer_vms(customer_name):
@@ -1762,6 +1808,73 @@ def process_statistics():
     
     return jsonify(results), 200 if results["success"] else 400
 
+
+@app.route('/api/process/images/stream', methods=['POST'])
+def process_images_stream():
+    data = request.get_json() or {}
+    customer_name = data.get('customer_name', None)
+
+    if customer_name:
+        is_valid, error_msg = validate_customer_name(customer_name)
+        if not is_valid:
+            return jsonify({"success": False, "error": error_msg}), 400
+
+    def generate():
+        for event in image_processor.process_images_stream(customer_name):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/process/statistics/stream', methods=['POST'])
+def process_statistics_stream():
+    data = request.get_json() or {}
+    customer_name = data.get('customer_name', None)
+
+    if customer_name:
+        is_valid, error_msg = validate_customer_name(customer_name)
+        if not is_valid:
+            return jsonify({"success": False, "error": error_msg}), 400
+
+    def generate():
+        for event in stats_processor.process_statistics_stream(customer_name):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/logs', methods=['GET'])
+def get_activity_logs():
+    action_type = request.args.get('action_type', None)
+    status = request.args.get('status', None)
+    limit = request.args.get('limit', 50, type=int)
+    logs = activity_logger.get_logs(action_type=action_type, status=status, limit=limit)
+    return jsonify({"success": True, "logs": logs, "count": len(logs)})
+
+
+@app.route('/api/logs/<log_id>', methods=['GET'])
+def get_activity_log_detail(log_id):
+    log_entry = activity_logger.get_log_detail(log_id)
+    if not log_entry:
+        return jsonify({"success": False, "error": "로그를 찾을 수 없습니다."}), 404
+    return jsonify({"success": True, "log": log_entry})
+
+
+@app.route('/api/logs/<log_id>', methods=['DELETE'])
+def delete_activity_log(log_id):
+    if activity_logger.delete_log(log_id):
+        return jsonify({"success": True, "message": "로그가 삭제되었습니다."})
+    return jsonify({"success": False, "error": "로그를 찾을 수 없습니다."}), 404
+
+
+@app.route('/api/logs', methods=['DELETE'])
+def clear_activity_logs():
+    activity_logger.clear_logs()
+    return jsonify({"success": True, "message": "모든 로그가 삭제되었습니다."})
+
+
 @app.route('/api/templates/generate', methods=['POST'])
 def generate_template():
     """마스터 템플릿 기반 고객사별 템플릿 자동 생성"""
@@ -1805,6 +1918,83 @@ def generate_template():
         display_name=display_name
     )
     
+    return jsonify(results), 200 if results["success"] else 400
+
+
+@app.route('/api/dashboard/structure/<customer_name>', methods=['GET'])
+def get_dashboard_structure(customer_name):
+    """Grafana 대시보드에서 VM/리소스 구조 조회"""
+    customer_name = urllib.parse.unquote(customer_name)
+    is_valid, error_msg = validate_customer_name(customer_name)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+    vms, error = template_generator.analyze_dashboard_structure(customer_name)
+    if error:
+        return jsonify({"success": False, "error": error}), 400
+
+    vms_serializable = []
+    for vm in vms:
+        vms_serializable.append({
+            "dir_name": vm["dir_name"],
+            "vm_name": vm["vm_name"],
+            "ip": vm["ip"],
+            "resources": vm["resources"],
+            "pages_needed": vm["pages_needed"],
+            "row_title_raw": vm.get("row_title_raw", "")
+        })
+
+    return jsonify({
+        "success": True,
+        "customer_name": customer_name,
+        "vms": vms_serializable,
+        "total_vms": len(vms),
+        "total_resources": sum(len(vm["resources"]) for vm in vms)
+    })
+
+
+@app.route('/api/templates/generate-from-dashboard', methods=['POST'])
+def generate_template_from_dashboard():
+    """Grafana 대시보드 기반 고객사별 템플릿 자동 생성"""
+    data = request.get_json() or {}
+    customer_name = data.get('customer_name')
+    master_template = data.get('master_template')
+
+    if not customer_name:
+        return jsonify({"success": False, "error": "customer_name이 필요합니다."}), 400
+
+    is_valid, error_msg = validate_customer_name(customer_name)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+
+    if not master_template:
+        master_files = [f for f in os.listdir(config.BASE_TEMPLATE_DIR)
+                       if f.endswith('.pptx') and '{{NAME}}' in f]
+        if master_files:
+            master_template = os.path.join(config.BASE_TEMPLATE_DIR, master_files[0])
+        else:
+            all_pptx = [f for f in os.listdir(config.BASE_TEMPLATE_DIR) if f.endswith('.pptx')]
+            if all_pptx:
+                master_template = os.path.join(config.BASE_TEMPLATE_DIR, all_pptx[0])
+            else:
+                return jsonify({"success": False, "error": "마스터 템플릿을 찾을 수 없습니다."}), 400
+    else:
+        if not os.path.isabs(master_template):
+            master_template = os.path.join(config.BASE_TEMPLATE_DIR, master_template)
+
+    if not validate_path_in_base(master_template, config.BASE_TEMPLATE_DIR):
+        return jsonify({"success": False, "error": "잘못된 템플릿 경로입니다."}), 400
+
+    if not os.path.exists(master_template):
+        return jsonify({"success": False, "error": f"마스터 템플릿이 존재하지 않습니다: {master_template}"}), 404
+
+    display_name = config.get_display_name(customer_name)
+
+    results = template_generator.generate_template_from_dashboard(
+        master_template,
+        customer_name,
+        display_name=display_name
+    )
+
     return jsonify(results), 200 if results["success"] else 400
 
 
@@ -2071,6 +2261,56 @@ def download_results():
             download_name='all_results.zip'
         )
 
+@app.route('/api/cleanup/old-reports', methods=['POST'])
+def cleanup_old_reports():
+    from datetime import date
+    customer = request.json.get('customer', None) if request.is_json else None
+
+    today = date.today()
+    cutoff = datetime(today.year, today.month, 1, 0, 0, 0).timestamp()
+
+    target_dirs = [config.OUTPUT_DIR, config.OUTPUT_DIR_WITH_IMAGES]
+    deleted_files = []
+    error_files = []
+
+    for base_dir in target_dirs:
+        if not os.path.exists(base_dir):
+            continue
+        if customer:
+            is_valid, err = validate_customer_name(customer)
+            if not is_valid:
+                return jsonify({"success": False, "error": err}), 400
+            scan_dirs = [os.path.join(base_dir, customer)]
+        else:
+            try:
+                scan_dirs = [os.path.join(base_dir, d) for d in os.listdir(base_dir)
+                             if os.path.isdir(os.path.join(base_dir, d))]
+            except Exception:
+                scan_dirs = [base_dir]
+
+        for scan_dir in scan_dirs:
+            if not os.path.exists(scan_dir):
+                continue
+            for root, dirs, files in os.walk(scan_dir):
+                for f in files:
+                    if not f.endswith('.pptx'):
+                        continue
+                    fpath = os.path.join(root, f)
+                    try:
+                        if os.path.getmtime(fpath) < cutoff:
+                            os.remove(fpath)
+                            deleted_files.append(fpath)
+                    except Exception as e:
+                        error_files.append({"file": fpath, "error": str(e)})
+
+    return jsonify({
+        "success": True,
+        "deleted": len(deleted_files),
+        "files": deleted_files,
+        "errors": error_files
+    })
+
+
 @app.route('/api/download/templates', methods=['GET'])
 def download_templates():
     template_type = request.args.get('type', 'final')
@@ -2106,8 +2346,7 @@ def download_templates():
                 for file in files:
                     if file.endswith('.pptx'):
                         file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, base_dir)
-                        zipf.write(file_path, arcname)
+                        zipf.write(file_path, file)
                         file_count += 1
         
         if file_count == 0:
@@ -2128,8 +2367,7 @@ def download_templates():
                 for file in files:
                     if file.endswith('.pptx'):
                         file_path = os.path.join(root, file)
-                        arcname = os.path.relpath(file_path, base_dir)
-                        zipf.write(file_path, arcname)
+                        zipf.write(file_path, file)
                         file_count += 1
         
         if file_count == 0:
@@ -2919,6 +3157,27 @@ def render_all_images():
     return jsonify(result)
 
 
+@app.route('/api/render/all/stream', methods=['POST'])
+def render_all_images_stream():
+    data = request.get_json() or {}
+    customer_name = data.get('customer_name', '').strip()
+
+    if not customer_name:
+        return jsonify({"success": False, "error": "고객사 이름이 필요합니다."}), 400
+
+    is_valid, error_msg = validate_customer_name(customer_name)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+
+    def generate():
+        result = image_renderer.render_all_panels_stream(customer_name)
+        for event in result:
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
 @app.route('/api/render/selected', methods=['POST'])
 def render_selected_images():
     data = request.get_json() or {}
@@ -2944,6 +3203,31 @@ def render_selected_images():
     return jsonify(result)
 
 
+@app.route('/api/render/selected/stream', methods=['POST'])
+def render_selected_images_stream():
+    data = request.get_json() or {}
+    customer_name = data.get('customer_name', '').strip()
+    panel_ids = data.get('panel_ids', [])
+
+    if not customer_name:
+        return jsonify({"success": False, "error": "고객사 이름이 필요합니다."}), 400
+
+    if not panel_ids:
+        return jsonify({"success": False, "error": "렌더링할 패널을 선택해주세요."}), 400
+
+    is_valid, error_msg = validate_customer_name(customer_name)
+    if not is_valid:
+        return jsonify({"success": False, "error": error_msg}), 400
+
+    def generate():
+        result = image_renderer.render_selected_panels_stream(customer_name, panel_ids)
+        for event in result:
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
 @app.route('/api/render/all-customers', methods=['POST'])
 def render_all_customers():
     logs = []
@@ -2954,6 +3238,61 @@ def render_all_customers():
     result = image_renderer.render_all_customers(log_func=log_func)
     result["logs"] = logs
     return jsonify(result)
+
+
+@app.route('/api/render/all-customers/stream', methods=['POST'])
+def render_all_customers_stream():
+    def generate():
+        result = image_renderer.render_all_customers_stream()
+        for event in result:
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+    return Response(generate(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+
+@app.route('/api/render/download-files', methods=['POST'])
+def download_rendered_files():
+    data = request.get_json() or {}
+    file_paths = data.get('files', [])
+    customer_name = data.get('customer_name', 'rendered')
+
+    if not file_paths:
+        return jsonify({"success": False, "error": "다운로드할 파일이 없습니다."}), 400
+
+    safe_customer = os.path.basename(customer_name)
+    if not safe_customer:
+        return jsonify({"success": False, "error": "잘못된 고객사 이름입니다."}), 400
+
+    base_image_real = os.path.realpath(config.BASE_IMAGE_DIR)
+    customer_base_real = os.path.realpath(os.path.join(config.BASE_IMAGE_DIR, safe_customer))
+    if not customer_base_real.startswith(base_image_real):
+        return jsonify({"success": False, "error": "잘못된 경로입니다."}), 400
+
+    memory_file = io.BytesIO()
+    file_count = 0
+    with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for fpath in file_paths:
+            real_path = os.path.realpath(fpath)
+            if not real_path.startswith(customer_base_real + os.sep) and real_path != customer_base_real:
+                continue
+            if os.path.isfile(real_path):
+                arcname = os.path.relpath(real_path, customer_base_real)
+                if arcname.startswith('..'):
+                    continue
+                zipf.write(real_path, arcname)
+                file_count += 1
+
+    if file_count == 0:
+        return jsonify({"success": False, "error": "다운로드할 파일이 없습니다."}), 404
+
+    memory_file.seek(0)
+    return send_file(
+        memory_file,
+        mimetype='application/zip',
+        as_attachment=True,
+        download_name=f'{safe_customer}_rendered.zip'
+    )
 
 
 @app.errorhandler(Exception)

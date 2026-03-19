@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from datetime import datetime, timezone, timedelta
 import logging
@@ -13,6 +14,12 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 KST = timezone(timedelta(hours=9))
 DEFAULT_WIDTH = 640
 DEFAULT_HEIGHT = 300
+
+_WIN_INVALID = re.compile(r'[\\/:\*\?"<>\|]')
+
+
+def safe_filename(name):
+    return _WIN_INVALID.sub('_', name)
 
 
 def get_previous_month_timestamps():
@@ -56,7 +63,7 @@ def extract_panels_from_dashboard(panels, row_map=None, current_row=None):
         panel_title = p.get("title", f"panel_{p.get('id', 'unknown')}")
         
         if panel_type == "row":
-            row_title = p.get("title", "Unnamed_Row").replace(" ", "_").replace("/", "_")
+            row_title = safe_filename(p.get("title", "Unnamed_Row")).replace(" ", "_")
             row_map[row_title] = row_map.get(row_title, [])
             current_row = row_title
             
@@ -67,7 +74,7 @@ def extract_panels_from_dashboard(panels, row_map=None, current_row=None):
             panel_info = {
                 "id": p["id"],
                 "title": panel_title,
-                "title_safe": panel_title.replace(" ", "_").replace("/", "_"),
+                "title_safe": safe_filename(panel_title).replace(" ", "_"),
                 "type": panel_type
             }
             if current_row:
@@ -286,6 +293,232 @@ def render_selected_panels(customer_name, panel_ids, log_func=None):
     result["success"] = len(result["failed"]) == 0
     result["save_dir"] = save_base_dir
     return result
+
+
+def render_all_panels_stream(customer_name):
+    panels_info = get_panels_for_customer(customer_name)
+    if not panels_info.get("success"):
+        yield {"type": "error", "error": panels_info.get("error", "패널 정보 조회 실패")}
+        return
+
+    dashboard_uid = panels_info["dashboard_uid"]
+    dashboard_slug = panels_info["dashboard_slug"]
+    panel_rows = panels_info["panel_rows"]
+
+    all_panels_list = []
+    for row_title, panels in panel_rows.items():
+        for panel in panels:
+            all_panels_list.append({**panel, "row": row_title})
+
+    total = len(all_panels_list)
+    yield {"type": "init", "total": total, "customer": customer_name}
+
+    if total == 0:
+        save_base_dir = os.path.join(config.BASE_IMAGE_DIR, customer_name)
+        yield {"type": "complete", "rendered": 0, "failed": 0,
+               "total": 0, "save_dir": save_base_dir, "success": True,
+               "message": "렌더링할 패널이 없습니다."}
+        return
+
+    save_base_dir = os.path.join(config.BASE_IMAGE_DIR, customer_name)
+    from_ts, to_ts = get_previous_month_timestamps()
+
+    rendered_count = 0
+    failed_count = 0
+    rendered_files = []
+
+    for idx, panel in enumerate(all_panels_list):
+        panel_id = panel["id"]
+        row_title = panel["row"]
+        row_dir = os.path.join(save_base_dir, row_title)
+        os.makedirs(row_dir, exist_ok=True)
+
+        filename = f"{panel['title_safe']}_{panel_id}.png"
+        save_path = os.path.join(row_dir, filename)
+
+        yield {"type": "progress", "current": idx + 1, "total": total,
+               "panel": panel["title"], "row": row_title, "status": "rendering"}
+
+        try:
+            render_result = render_panel_image(
+                dashboard_uid, dashboard_slug, panel_id, save_path,
+                from_ts=from_ts, to_ts=to_ts
+            )
+        except Exception as e:
+            render_result = {"success": False, "error": str(e)}
+
+        if render_result.get("success"):
+            rendered_count += 1
+            rendered_files.append(save_path)
+            yield {"type": "panel_done", "current": idx + 1, "total": total,
+                   "panel_id": panel_id, "panel": panel["title"], "row": row_title,
+                   "success": True, "rendered": rendered_count, "failed": failed_count}
+        else:
+            failed_count += 1
+            yield {"type": "panel_done", "current": idx + 1, "total": total,
+                   "panel_id": panel_id, "panel": panel["title"], "row": row_title,
+                   "success": False, "error": render_result.get("error", "알 수 없는 오류"),
+                   "rendered": rendered_count, "failed": failed_count}
+
+    yield {"type": "complete", "rendered": rendered_count, "failed": failed_count,
+           "total": total, "save_dir": save_base_dir,
+           "rendered_files": rendered_files,
+           "success": failed_count == 0}
+
+
+def render_selected_panels_stream(customer_name, panel_ids):
+    panels_info = get_panels_for_customer(customer_name)
+    if not panels_info.get("success"):
+        yield {"type": "error", "error": panels_info.get("error", "패널 정보 조회 실패")}
+        return
+
+    dashboard_uid = panels_info["dashboard_uid"]
+    dashboard_slug = panels_info["dashboard_slug"]
+    panel_rows = panels_info["panel_rows"]
+
+    panel_id_set = set(int(pid) for pid in panel_ids)
+    panel_map = {}
+    for row_title, panels in panel_rows.items():
+        for panel in panels:
+            if panel["id"] in panel_id_set:
+                panel_map[panel["id"]] = {**panel, "row": row_title}
+
+    total = len(panel_ids)
+    yield {"type": "init", "total": total, "customer": customer_name}
+
+    if total == 0:
+        save_base_dir = os.path.join(config.BASE_IMAGE_DIR, customer_name)
+        yield {"type": "complete", "rendered": 0, "failed": 0,
+               "total": 0, "save_dir": save_base_dir, "success": True,
+               "message": "렌더링할 패널이 없습니다."}
+        return
+
+    save_base_dir = os.path.join(config.BASE_IMAGE_DIR, customer_name)
+    from_ts, to_ts = get_previous_month_timestamps()
+
+    rendered_count = 0
+    failed_count = 0
+    rendered_files = []
+
+    for idx, pid in enumerate(panel_ids):
+        panel_id_int = int(pid)
+        panel_info = panel_map.get(panel_id_int)
+
+        if not panel_info:
+            failed_count += 1
+            yield {"type": "panel_done", "current": idx + 1, "total": total,
+                   "panel_id": panel_id_int, "panel": f"ID {panel_id_int}",
+                   "success": False, "error": "패널을 찾을 수 없습니다.",
+                   "rendered": rendered_count, "failed": failed_count}
+            continue
+
+        row_title = panel_info["row"]
+        row_dir = os.path.join(save_base_dir, row_title)
+        os.makedirs(row_dir, exist_ok=True)
+
+        filename = f"{panel_info['title_safe']}_{panel_id_int}.png"
+        save_path = os.path.join(row_dir, filename)
+
+        yield {"type": "progress", "current": idx + 1, "total": total,
+               "panel": panel_info["title"], "row": row_title, "status": "rendering"}
+
+        try:
+            render_result = render_panel_image(
+                dashboard_uid, dashboard_slug, panel_id_int, save_path,
+                from_ts=from_ts, to_ts=to_ts
+            )
+        except Exception as e:
+            render_result = {"success": False, "error": str(e)}
+
+        if render_result.get("success"):
+            rendered_count += 1
+            rendered_files.append(save_path)
+            yield {"type": "panel_done", "current": idx + 1, "total": total,
+                   "panel_id": panel_id_int, "panel": panel_info["title"], "row": row_title,
+                   "success": True, "rendered": rendered_count, "failed": failed_count}
+        else:
+            failed_count += 1
+            yield {"type": "panel_done", "current": idx + 1, "total": total,
+                   "panel_id": panel_id_int, "panel": panel_info["title"], "row": row_title,
+                   "success": False, "error": render_result.get("error", "알 수 없는 오류"),
+                   "rendered": rendered_count, "failed": failed_count}
+
+    yield {"type": "complete", "rendered": rendered_count, "failed": failed_count,
+           "total": total, "save_dir": save_base_dir,
+           "rendered_files": rendered_files,
+           "success": failed_count == 0}
+
+
+def render_all_customers_stream():
+    customers = config.get_all_customers()
+    customers_with_uid = [c for c in customers if c.get('dashboard_uid')]
+
+    if not customers_with_uid:
+        yield {"type": "error", "error": "대시보드 UID가 설정된 고객사가 없습니다."}
+        return
+
+    total_customers = len(customers_with_uid)
+    yield {"type": "init", "total_customers": total_customers}
+
+    total_rendered = 0
+    total_failed = 0
+    customers_rendered = []
+    customers_failed = []
+
+    for c_idx, customer in enumerate(customers_with_uid):
+        customer_name = customer['name']
+        yield {"type": "customer_start", "customer": customer_name,
+               "customer_index": c_idx + 1, "total_customers": total_customers}
+
+        try:
+            panel_count = 0
+            c_rendered = 0
+            c_failed = 0
+            c_files = []
+            for event in render_all_panels_stream(customer_name):
+                if event["type"] == "init":
+                    panel_count = event["total"]
+                    yield {"type": "customer_progress", "customer": customer_name,
+                           "customer_index": c_idx + 1, "total_customers": total_customers,
+                           "panel_total": panel_count, "panel_current": 0}
+                elif event["type"] == "progress":
+                    yield {"type": "customer_progress", "customer": customer_name,
+                           "customer_index": c_idx + 1, "total_customers": total_customers,
+                           "panel_total": panel_count,
+                           "panel_current": event["current"],
+                           "panel": event.get("panel", ""), "row": event.get("row", "")}
+                elif event["type"] == "panel_done":
+                    c_rendered = event.get("rendered", 0)
+                    c_failed = event.get("failed", 0)
+                elif event["type"] == "complete":
+                    c_rendered = event.get("rendered", 0)
+                    c_failed = event.get("failed", 0)
+                    c_files = event.get("rendered_files", [])
+                elif event["type"] == "error":
+                    customers_failed.append({"name": customer_name, "error": event["error"]})
+                    yield {"type": "customer_done", "customer": customer_name,
+                           "customer_index": c_idx + 1, "total_customers": total_customers,
+                           "success": False, "error": event["error"]}
+                    continue
+
+            total_rendered += c_rendered
+            total_failed += c_failed
+            customers_rendered.append({"name": customer_name, "rendered_count": c_rendered,
+                                       "failed_count": c_failed, "rendered_files": c_files})
+            yield {"type": "customer_done", "customer": customer_name,
+                   "customer_index": c_idx + 1, "total_customers": total_customers,
+                   "success": True, "rendered": c_rendered, "failed": c_failed,
+                   "rendered_files": c_files}
+
+        except Exception as e:
+            customers_failed.append({"name": customer_name, "error": str(e)})
+            yield {"type": "customer_done", "customer": customer_name,
+                   "customer_index": c_idx + 1, "total_customers": total_customers,
+                   "success": False, "error": str(e)}
+
+    yield {"type": "complete", "total_rendered": total_rendered, "total_failed": total_failed,
+           "customers_rendered": customers_rendered, "customers_failed": customers_failed,
+           "success": len(customers_failed) == 0}
 
 
 def render_all_customers(log_func=None):

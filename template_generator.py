@@ -2,17 +2,20 @@
 템플릿 자동 생성 모듈
 - 마스터 템플릿 기반 고객사별 템플릿 생성
 - VM 정보 기반 슬라이드 복제 및 플레이스홀더 치환
+- Grafana 대시보드 기반 템플릿 생성
 """
 import os
 import re
 import copy
 import math
+import logging
 from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from lxml import etree
 
 import config
+import image_renderer
 
 PATTERN_SLIDE_FIRST_VM = 4
 PATTERN_SLIDE_TWO_RESOURCES = 5
@@ -789,4 +792,250 @@ def add_vm_to_template(template_path, master_template_path, vm_dir_name, custome
         import traceback
         results["traceback"] = traceback.format_exc()
     
+    return results
+
+
+def analyze_dashboard_structure(customer_name):
+    """Grafana 대시보드 API를 통해 VM/리소스 구조 분석
+    
+    Row 이름에서 VM명/IP 추출, 패널 Title에서 리소스명 추출하여
+    analyze_customer_images와 동일한 vms 구조로 반환
+    """
+    dashboard_uid = config.get_dashboard_uid(customer_name)
+    if not dashboard_uid:
+        return None, f"고객사 '{customer_name}'의 대시보드 UID가 설정되지 않았습니다."
+
+    dashboard_info = image_renderer.get_dashboard_info(dashboard_uid)
+    if not dashboard_info:
+        return None, f"대시보드 정보를 가져올 수 없습니다. (UID: {dashboard_uid})"
+
+    panels = dashboard_info.get("panels", [])
+    if not panels:
+        return None, "대시보드에 패널이 없습니다."
+
+    row_data = {}
+    row_order = []
+    current_row = None
+
+    def process_panels(panel_list, parent_row=None):
+        nonlocal current_row
+        for p in panel_list:
+            panel_type = p.get("type")
+            if panel_type == "row":
+                row_title_raw = p.get("title", "Unnamed_Row")
+                current_row = row_title_raw
+                if current_row not in row_data:
+                    row_data[current_row] = []
+                    row_order.append(current_row)
+                sub_panels = p.get("panels", [])
+                if sub_panels:
+                    process_panels(sub_panels, current_row)
+            elif "id" in p:
+                panel_title = p.get("title", "")
+                target_row = parent_row or current_row
+                if target_row and target_row in row_data:
+                    row_data[target_row].append({
+                        "id": p["id"],
+                        "title": panel_title,
+                        "type": panel_type
+                    })
+
+    process_panels(panels)
+
+    if not row_data:
+        default_row = "기타"
+        row_data[default_row] = []
+        row_order.append(default_row)
+        for p in panels:
+            if p.get("type") != "row" and "id" in p:
+                row_data[default_row].append({
+                    "id": p["id"],
+                    "title": p.get("title", ""),
+                    "type": p.get("type")
+                })
+        if not row_data[default_row]:
+            return None, "대시보드에 Row 또는 패널이 없습니다."
+
+    vms = []
+    for row_title_raw in row_order:
+        row_panels = row_data[row_title_raw]
+        row_title_safe = row_title_raw.replace(" ", "_").replace("/", "_")
+        vm_name, vm_ip = parse_vm_directory(row_title_safe)
+
+        resources = []
+        for panel in row_panels:
+            panel_title = panel["title"]
+            panel_id = panel["id"]
+
+            if " : " in panel_title:
+                parts = panel_title.split(" : ", 1)
+                resource_name_raw = parts[1].strip()
+                image_vm_name = parts[0].strip()
+            else:
+                resource_name_raw = panel_title.strip()
+                image_vm_name = vm_name
+
+            panel_title_safe = panel_title.replace(" ", "_").replace("/", "_")
+            filename = f"{panel_title_safe}_{panel_id}"
+
+            resource_name_clean = resource_name_raw.lstrip("/")
+
+            resources.append({
+                "name": resource_name_clean,
+                "filename": filename,
+                "panel_id": str(panel_id),
+                "query": get_query_type(resource_name_clean),
+                "image_vm_name": image_vm_name
+            })
+
+        resources = sort_resources(resources)
+
+        vms.append({
+            "dir_name": row_title_safe,
+            "vm_name": vm_name,
+            "ip": vm_ip,
+            "resources": resources,
+            "pages_needed": math.ceil(len(resources) / 2) if resources else 0,
+            "row_title_raw": row_title_raw
+        })
+
+    return vms, None
+
+
+def generate_template_from_dashboard(master_template_path, customer_name, output_path=None, display_name=None):
+    """Grafana 대시보드 기반 고객사 템플릿 자동 생성
+    
+    analyze_customer_images 대신 analyze_dashboard_structure를 사용하여
+    이미지 렌더링 없이 대시보드 구조만으로 템플릿 생성
+    """
+    results = {
+        "success": True,
+        "logs": [],
+        "errors": []
+    }
+
+    report_name = display_name if display_name else customer_name
+
+    def log(msg):
+        results["logs"].append(msg)
+
+    try:
+        vms, error = analyze_dashboard_structure(customer_name)
+        if error:
+            results["success"] = False
+            results["errors"].append(error)
+            return results
+
+        if not vms:
+            results["success"] = False
+            results["errors"].append("대시보드에서 VM 정보를 찾을 수 없습니다.")
+            return results
+
+        log(f"대시보드에서 VM {len(vms)}개 발견")
+        for vm in vms:
+            log(f"  - {vm['vm_name']} ({vm['ip']}): 리소스 {len(vm['resources'])}개")
+            for res in vm['resources']:
+                log(f"      {res['name']} (패널ID: {res['panel_id']})")
+
+        prs = Presentation(master_template_path)
+        total_slides = len(prs.slides)
+        log(f"마스터 템플릿 로드: {total_slides}개 슬라이드")
+
+        is_valid, validation_error = validate_master_template(prs)
+        if not is_valid:
+            results["success"] = False
+            results["errors"].append(validation_error)
+            return results
+
+        for slide_idx in range(min(4, len(prs.slides))):
+            slide = prs.slides[slide_idx]
+            for shape in slide.shapes:
+                if shape.has_text_frame and '{{CUSTOMER_NAME}}' in shape.text:
+                    old_text = shape.text
+                    new_text = old_text.replace('{{CUSTOMER_NAME}}', report_name)
+                    set_text_preserve_format(shape, new_text)
+        log(f"{{{{CUSTOMER_NAME}}}} 치환 완료: {report_name}")
+
+        if len(prs.slides) > 3:
+            update_table_vm_list(prs.slides[3], vms)
+            log("슬라이드 4 서버현황표 업데이트 완료")
+
+        for vm_idx, vm in enumerate(vms):
+            seq = f"3.{vm_idx + 1}"
+            vm_name_val = vm['vm_name']
+            vm_ip = vm['ip']
+            resources = vm['resources']
+
+            log(f"VM {seq} {vm_name_val} 처리 중...")
+
+            if not resources:
+                log(f"  리소스 없음, 건너뜀")
+                continue
+
+            resource_pairs = []
+            for i in range(0, len(resources), 2):
+                pair = resources[i:i+2]
+                resource_pairs.append(pair)
+
+            for pair_idx, pair in enumerate(resource_pairs):
+                if vm_idx == 0 and pair_idx == 0:
+                    slide_template_idx = PATTERN_SLIDE_FIRST_VM
+                elif pair_idx == 0:
+                    slide_template_idx = PATTERN_SLIDE_OTHER_VM_FIRST
+                elif len(pair) == 2:
+                    slide_template_idx = PATTERN_SLIDE_TWO_RESOURCES
+                else:
+                    slide_template_idx = PATTERN_SLIDE_ONE_RESOURCE
+
+                new_slide = duplicate_slide_xml(prs, slide_template_idx)
+                update_slide_content(new_slide, seq, vm_name_val, vm_ip, pair, log)
+                log(f"  슬라이드 생성: {', '.join([r['name'] for r in pair])}")
+
+        trailing_slide_indices = list(range(
+            PATTERN_SLIDE_OTHER_VM_FIRST + 1,
+            PATTERN_SLIDE_OTHER_VM_FIRST + 1 + TRAILING_SLIDES_COUNT
+        ))
+
+        trailing_slide_ids = []
+        for idx in trailing_slide_indices:
+            if idx < len(prs.slides):
+                trailing_slide_ids.append(prs.slides._sldIdLst[idx])
+
+        for sld_id in trailing_slide_ids:
+            prs.slides._sldIdLst.remove(sld_id)
+        for sld_id in trailing_slide_ids:
+            prs.slides._sldIdLst.append(sld_id)
+
+        log(f"마지막 {TRAILING_SLIDES_COUNT}개 슬라이드를 맨 뒤로 이동 완료")
+
+        pattern_indices = sorted([PATTERN_SLIDE_FIRST_VM, PATTERN_SLIDE_TWO_RESOURCES,
+                                 PATTERN_SLIDE_ONE_RESOURCE, PATTERN_SLIDE_OTHER_VM_FIRST],
+                                reverse=True)
+
+        for idx in pattern_indices:
+            if idx < len(prs.slides):
+                rId = prs.slides._sldIdLst[idx].rId
+                prs.part.drop_rel(rId)
+                del prs.slides._sldIdLst[idx]
+
+        log(f"패턴 슬라이드 4개 삭제 완료")
+
+        if not output_path:
+            output_dir = os.path.join(config.BASE_TEMPLATE_DIR, customer_name)
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = os.path.join(output_dir, f"{customer_name}_월간보고서.pptx")
+
+        prs.save(output_path)
+        log(f"템플릿 저장: {output_path}")
+
+        results["output_path"] = output_path
+        results["vm_count"] = len(vms)
+        results["slide_count"] = len(prs.slides)
+
+    except Exception as e:
+        results["success"] = False
+        results["errors"].append(str(e))
+        import traceback
+        results["traceback"] = traceback.format_exc()
+
     return results
